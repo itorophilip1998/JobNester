@@ -1,0 +1,41 @@
+{
+  "name": "jobnester",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n web,api,worker -c cyan,magenta,yellow \"npm run dev -w @jobnester/web\" \"npm run dev -w @jobnester/api\" \"npm run dev -w @jobnester/worker\"",
+    "build": "npm run build -w @jobnester/web && npm run build -w @jobnester/api && npm run build -w @jobnester/worker && node scripts/prepare-site.mjs",
+    "typecheck": "tsc --noEmit -p apps/api && tsc --noEmit -p apps/worker && tsc --noEmit -p apps/web",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:dev": "prisma migrate dev",
+    "db:seed": "node --import tsx prisma/seed.ts",
+    "test:integration": "RUN_INTEGRATION=1 node --import tsx --test tests/integration.test.ts",
+    "test:e2e": "playwright test",
+    "format": "prettier --write apps packages tests docs scripts *.json *.md *.yaml .github/workflows/*.yml"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.0",
+    "dotenv": "^16.6.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@types/node": "^22.19.0",
+    "concurrently": "^9.2.1",
+    "prettier": "^3.10.1",
+    "prisma": "^6.19.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "postcss": "^8.5.33"
+  },
+  "type": "module",
+  "overrides": {
+    "postcss": "$postcss",
+    "deepmerge-ts": "^8.0.2"
+  }
+}

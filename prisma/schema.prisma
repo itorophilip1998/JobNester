@@ -1,0 +1,149 @@
+generator client {
+ provider = "prisma-client-js"
+}
+datasource db {
+ provider = "postgresql"
+ url = env("DATABASE_URL")
+}
+model Owner {
+ id String @id @default("owner")
+ profile Json
+ modes Json
+ settings Json
+ portfolioDraft Json
+ portfolioPublished Json?
+ createdAt DateTime @default(now())
+ updatedAt DateTime @updatedAt
+}
+model Job {
+ id String @id @default(cuid())
+ company String
+ title String
+ location String
+ url String @unique
+ fingerprint String
+ payload Json
+ active Boolean @default(true)
+ viewed Boolean @default(false)
+ hidden Boolean @default(false)
+ discoveredAt DateTime @default(now())
+ updatedAt DateTime @updatedAt
+ sightings SourceRecord[]
+ application Application?
+ resumes Resume[]
+ @@index([fingerprint])
+}
+model SourceRecord {
+ id String @id @default(cuid())
+ provider String
+ externalId String
+ jobId String
+ job Job @relation(fields:[jobId],references:[id],onDelete:Cascade)
+ lastSeen DateTime @default(now())
+ @@unique([provider,externalId])
+}
+model Source {
+ scanCursor Int @default(0)
+ id String @id @default(cuid())
+ provider String
+ board String
+ company String
+ enabled Boolean @default(true)
+ lastRun DateTime?
+ lastError String?
+ @@unique([provider,board])
+}
+model Application {
+ id String @id @default(cuid())
+ jobId String @unique
+ job Job @relation(fields:[jobId],references:[id])
+ stage String @default("Saved")
+ resumeId String?
+ resume Resume? @relation("SubmittedResume",fields:[resumeId],references:[id])
+ appliedAt DateTime?
+ followUp DateTime?
+ events ApplicationEvent[]
+ createdAt DateTime @default(now())
+}
+model ApplicationEvent {
+ id String @id @default(cuid())
+ applicationId String
+ application Application @relation(fields:[applicationId],references:[id],onDelete:Cascade)
+ type String
+ note String
+ at DateTime @default(now())
+}
+model Resume {
+ generationTaskId String? @unique
+ id String @id @default(cuid())
+ jobId String
+ job Job @relation(fields:[jobId],references:[id])
+ modeId String
+ name String
+ content String
+ coverLetter String
+ evidenceIds Json
+ ready Boolean @default(false)
+ createdAt DateTime @default(now())
+ applications Application[] @relation("SubmittedResume")
+}
+model Task {
+ id String @id @default(cuid())
+ type String
+ status String @default("queued")
+ progress Int @default(0)
+ message String @default("Waiting for worker")
+ createdAt DateTime @default(now())
+ updatedAt DateTime @updatedAt
+}
+model Integration {
+ provider String @id
+ encryptedTokens String
+ cursor String?
+ updatedAt DateTime @updatedAt
+}
+model Recruiter {
+ id String @id @default(cuid())
+ name String
+ email String
+ company String
+ notes String @default("")
+ followUp String @default("")
+}
+model MailThread {
+ id String @id
+ subject String
+ sender String
+ snippet String
+ category String
+ jobId String?
+ date DateTime
+}
+model Inquiry {
+ id String @id @default(cuid())
+ name String
+ email String
+ message String
+ read Boolean @default(false)
+ createdAt DateTime @default(now())
+}
+model AuditLog {
+ id String @id @default(cuid())
+ action String
+ metadata Json
+ createdAt DateTime @default(now())
+}
+model AiUsage {
+ id String @id @default(cuid())
+ taskId String @unique
+ model String
+ reservedUsd Float
+ createdAt DateTime @default(now())
+}
+model Asset {
+ id String @id @default(cuid())
+ key String @unique
+ mime String
+ originalName String
+ createdAt DateTime @default(now())
+}
