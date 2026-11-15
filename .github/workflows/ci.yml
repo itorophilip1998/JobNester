@@ -21,10 +21,22 @@ jobs:
       DATABASE_URL: postgresql://jobnester:test_password@localhost:5433/jobnester
       REDIS_URL: redis://localhost:6380
       NEXT_TELEMETRY_DISABLED: 1
+      AI_SERVICE_URL: http://localhost:8000
+      AI_SERVICE_TOKEN: ci-service-token-only
+      NEXT_PUBLIC_API_URL: ""
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r apps/ai/requirements.txt
+      - run: python -m unittest discover -s tests -v
+        working-directory: apps/ai
+      - run: |
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/jobnester-ai.log 2>&1 &
+          curl --retry 20 --retry-delay 1 --retry-connrefused --fail http://localhost:8000/health
+        working-directory: apps/ai
       - run: npm ci
       - run: npm run db:generate && npm run db:migrate
       - run: npm run typecheck && npm test

@@ -185,3 +185,123 @@ test("country onboarding separates eligible worldwide jobs from US-only roles", 
     page.locator(".job-card").filter({ hasText: "Anthropic" }),
   ).toContainText("Ineligible");
 });
+
+test("portfolio designer publishes two layouts, certifications, repository fallback and private contact settings", async ({
+  page,
+}) => {
+  await page.goto("/portfolio/edit");
+  await page.getByRole("button", { name: /Editorial — light/ }).click();
+  await page
+    .getByRole("combobox", { name: "Animation style" })
+    .selectOption("none");
+  await page
+    .getByRole("textbox", { name: "Display name", exact: true })
+    .fill("Editorial Engineer");
+  await page
+    .getByRole("textbox", { name: "Personal email — private destination" })
+    .fill("private-owner@example.com");
+  await page
+    .getByRole("textbox", { name: "GitHub / repository URL (fallback)" })
+    .first()
+    .fill("https://github.com/example/product");
+  await page
+    .getByRole("button", { name: "Add certification", exact: true })
+    .click();
+  await page
+    .getByRole("textbox", { name: "Certification name", exact: true })
+    .fill("Verified Cloud Certification");
+  await page
+    .getByRole("textbox", { name: "Issued by", exact: true })
+    .fill("Example Issuer");
+  await page
+    .getByRole("button", { name: "Publish portfolio", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText("published");
+  await page.goto("/portfolio");
+  await expect(page.locator(".portfolio-editorial")).toBeVisible();
+  await expect(page.locator(".portfolio-brand")).toContainText(
+    "Editorial Engineer",
+  );
+  await expect(page.locator(".public-certifications")).toContainText(
+    "Verified Cloud Certification",
+  );
+  await expect(page.locator("body")).not.toContainText(
+    "private-owner@example.com",
+  );
+  await page
+    .getByRole("button")
+    .filter({ hasText: "Cloud infrastructure" })
+    .click();
+  await expect(
+    page.getByRole("link", { name: "View repository" }),
+  ).toHaveAttribute("href", "https://github.com/example/product");
+  await page.getByRole("button", { name: "Close project" }).click();
+  await page.screenshot({
+    path: "test-results/portfolio-editorial.png",
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+    )
+    .toBe(true);
+  await page.screenshot({
+    path: "test-results/portfolio-editorial-mobile.png",
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/portfolio/edit");
+  await page
+    .getByRole("textbox", { name: "Display name", exact: true })
+    .fill("Private Draft Name");
+  await page
+    .getByRole("button", { name: "Save portfolio draft", exact: true })
+    .click();
+  await page.goto("/portfolio");
+  await expect(page.locator(".portfolio-brand")).toContainText(
+    "Editorial Engineer",
+  );
+  await page.goto("/portfolio/preview");
+  await expect(page.locator(".portfolio-brand")).toContainText(
+    "Private Draft Name",
+  );
+  await expect(page.locator(".portfolio-demo")).toContainText(
+    "Private draft preview",
+  );
+  await page.goto("/portfolio/edit");
+  await page.getByRole("button", { name: "Unpublish", exact: true }).click();
+  await page.goto("/portfolio");
+  await expect(
+    page.getByRole("heading", { name: "Portfolio coming soon." }),
+  ).toBeVisible();
+});
+
+test("a CV creates a reviewable portfolio draft without publishing it", async ({
+  page,
+}) => {
+  await page.goto("/portfolio/edit");
+  await page.getByLabel("Create portfolio from CV").setInputFiles({
+    name: "resume.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from(
+      "Jane Engineer\nSenior Software Engineer\njane@example.com\nSkills: TypeScript, React\nBuilt software at an actual employer.",
+    ),
+  });
+  await expect(page.getByRole("status")).toContainText("Draft created");
+  await expect(
+    page.getByRole("textbox", { name: "Display name", exact: true }),
+  ).toHaveValue("Jane Engineer");
+  await page
+    .getByRole("button", { name: "Save portfolio draft", exact: true })
+    .click();
+  await page.goto("/portfolio");
+  await expect(page.locator(".portfolio-brand")).not.toContainText(
+    "Jane Engineer",
+  );
+  await page.goto("/portfolio/preview");
+  await expect(page.locator(".portfolio-brand")).toContainText("Jane Engineer");
+  await expect(
+    page.getByRole("link", { name: "Download résumé" }),
+  ).toBeVisible();
+});

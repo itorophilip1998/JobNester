@@ -6,6 +6,8 @@ datasource db {
  url = env("DATABASE_URL")
 }
 model Owner {
+ clerkUserId String? @unique
+ contactRecipient String?
  id String @id @default("owner")
  profile Json
  modes Json
@@ -120,6 +122,8 @@ model MailThread {
  date DateTime
 }
 model Inquiry {
+ deliveryStatus String @default("pending")
+ deliveredAt DateTime?
  id String @id @default(cuid())
  name String
  email String

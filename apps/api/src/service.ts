@@ -29,7 +29,7 @@ const connection = {
   username: new URL(redisConnection.url).username || undefined,
   tls: redisConnection.url.startsWith("rediss:") ? {} : undefined,
 };
-export const queue = new Queue("jobnester", {
+export const queue = new Queue(process.env.JOB_QUEUE_NAME || "jobnester", {
   connection,
   defaultJobOptions: {
     attempts: 3,
@@ -102,7 +102,54 @@ export const profileSchema = z
     (p) => !p.confirmed || p.evidence.length > 0,
     "Confirmed profiles need at least one experience record",
   );
-const portfolioSchema = z.object({
+export const portfolioSchema = z.object({
+  layout: z.enum(["studio", "editorial"]).default("studio"),
+  accentColor: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .default("#b39af3"),
+  motion: z.enum(["none", "subtle", "expressive"]).default("subtle"),
+  heroHeading: z
+    .string()
+    .max(200)
+    .default("Thoughtful software.\nMeaningful impact."),
+  avatar: optionalUrl.default(""),
+  sections: z
+    .object({
+      work: z.boolean(),
+      about: z.boolean(),
+      resume: z.boolean(),
+      certifications: z.boolean(),
+      contact: z.boolean(),
+    })
+    .default({
+      work: true,
+      about: true,
+      resume: true,
+      certifications: true,
+      contact: true,
+    }),
+  sectionOrder: z
+    .array(z.enum(["work", "about", "resume", "certifications", "contact"]))
+    .length(5)
+    .refine((a) => new Set(a).size === 5)
+    .default(["work", "about", "resume", "certifications", "contact"]),
+  resume: z.object({ url: optionalUrl, name: z.string().max(200) }).optional(),
+  certifications: z
+    .array(
+      z.object({
+        id,
+        name: short,
+        issuer: z.string().max(200),
+        issuedAt: z.string().max(100),
+        credentialUrl: optionalUrl,
+        image: optionalUrl,
+        description: z.string().max(5000),
+        documentType: z.enum(["image", "pdf"]).optional(),
+      }),
+    )
+    .max(100)
+    .default([]),
   name: short,
   headline: short,
   bio: z.string().max(10000),
@@ -120,10 +167,19 @@ const portfolioSchema = z.object({
         url: optionalUrl,
         image: optionalUrl,
         video: optionalUrl.optional(),
+        repositoryUrl: optionalUrl.optional(),
       }),
     )
     .max(50),
-  experience: z.array(evidence).max(100),
+  experience: z
+    .array(
+      evidence.extend({
+        start: z.string().max(200),
+        end: z.string().max(200),
+        text: z.string().max(10000),
+      }),
+    )
+    .max(100),
   published: z.boolean(),
   publicResumeId: id.nullable(),
 });
@@ -170,6 +226,10 @@ const schemas: Record<string, z.ZodType> = {
   "resume.ready": z.object({ id }),
   "portfolio.save": portfolioSchema,
   "portfolio.publish": z.object({}),
+  "portfolio.unpublish": z.object({}),
+  "portfolio.contact-settings": z.object({
+    email: z.union([z.literal(""), z.email()]),
+  }),
   "settings.save": z.object({
     dailyTarget: z.number().int().min(100).max(500),
     scanTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
@@ -249,6 +309,15 @@ export class AppService {
       modes: owner.modes as unknown as CareerMode[],
       settings: owner.settings as unknown as Settings,
       portfolio: owner.portfolioDraft as unknown as Portfolio,
+      contactRecipient:
+        owner.contactRecipient ||
+        process.env.CONTACT_NOTIFY_EMAIL ||
+        process.env.OWNER_EMAIL ||
+        "",
+      emailDeliveryConfigured: !!(
+        (process.env.RESEND_API_KEY && process.env.CONTACT_FROM_EMAIL) ||
+        (process.env.SMTP_HOST && process.env.CONTACT_FROM_EMAIL)
+      ),
       jobs: jobs.map((j) => ({
         ...(j.payload as unknown as Job),
         id: j.id,
@@ -286,7 +355,7 @@ export class AppService {
       if (
         (await tx.task.count({
           where: { type, status: { in: ["queued", "running"] } },
-        })) >= (type === "resume" ? 20 : 1)
+        })) >= (type === "resume" ? 20 : type === "notify" ? 200 : 1)
       )
         throw new BadRequestException(
           type === "resume"
@@ -538,6 +607,26 @@ export class AppService {
         await db.owner.update({
           where: { id: o.id },
           data: { portfolioDraft: json(d) },
+        });
+        break;
+      }
+      case "portfolio.contact-settings": {
+        await db.owner.update({
+          where: { id: o.id },
+          data: { contactRecipient: d.email || null },
+        });
+        break;
+      }
+      case "portfolio.unpublish": {
+        await db.owner.update({
+          where: { id: o.id },
+          data: {
+            portfolioPublished: Prisma.DbNull,
+            portfolioDraft: json({
+              ...(o.portfolioDraft as object),
+              published: false,
+            }),
+          },
         });
         break;
       }

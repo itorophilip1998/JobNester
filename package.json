@@ -7,8 +7,10 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -n web,api,worker -c cyan,magenta,yellow \"npm run dev -w @jobnester/web\" \"npm run dev -w @jobnester/api\" \"npm run dev -w @jobnester/worker\"",
-    "build": "npm run build -w @jobnester/web && npm run build -w @jobnester/api && npm run build -w @jobnester/worker && node scripts/prepare-site.mjs",
+    "start": "node scripts/services.mjs start",
+    "start:live": "node scripts/services.mjs start",
+    "dev": "node scripts/services.mjs start",
+    "build": "npm run build -w @jobnester/web && npm run build -w @jobnester/api && npm run build -w @jobnester/worker",
     "typecheck": "tsc --noEmit -p apps/api && tsc --noEmit -p apps/worker && tsc --noEmit -p apps/web",
     "test": "node --import tsx --test tests/*.test.ts",
     "db:generate": "prisma generate",
@@ -17,7 +19,17 @@
     "db:seed": "node --import tsx prisma/seed.ts",
     "test:integration": "RUN_INTEGRATION=1 node --import tsx --test tests/integration.test.ts",
     "test:e2e": "playwright test",
-    "format": "prettier --write apps packages tests docs scripts *.json *.md *.yaml .github/workflows/*.yml"
+    "format": "prettier --write apps packages tests docs scripts *.json *.md *.yaml .github/workflows/*.yml",
+    "stop": "node scripts/services.mjs stop",
+    "restart": "node scripts/services.mjs restart",
+    "status": "node scripts/services.mjs status",
+    "logs": "node scripts/services.mjs logs",
+    "setup": "node scripts/services.mjs config",
+    "start:web": "npm run start -w @jobnester/web",
+    "build:site": "node scripts/export-site.mjs",
+    "test:ai": "docker compose exec -T ai python -m unittest discover -s tests -v",
+    "dev:web": "npm run dev -w @jobnester/web",
+    "dev:demo": "node scripts/demo.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",

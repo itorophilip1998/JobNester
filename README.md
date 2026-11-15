@@ -1,43 +1,65 @@
 # JobNester AI
 
-A personal career workspace and public portfolio built with Next.js, NestJS, PostgreSQL/Prisma, and BullMQ/Redis. The web app includes a clearly labeled browser-local demo; the live app uses an owner-authenticated API and durable database.
+A personal career workspace and public portfolio built with Next.js, NestJS, Python/FastAPI, PostgreSQL/Prisma, and BullMQ/Redis. The web app includes a clearly labeled browser-local demo; the live app uses an owner-authenticated API and durable database.
 
-## Run the demo
+## Start all services
+
+From this directory **or its parent project folder**:
+
+```sh
+npm start
+```
+
+Requires Node.js 22 and Docker with Compose v2. Host Python and npm packages are unnecessary for Docker startup. The dependency-free centralized launcher:
+
+1. Checks Docker/Compose, starts Docker Desktop if needed on macOS/Windows, and waits for the engine. On Linux it attempts systemd startup without elevation and reports how to start the daemon if permission is required.
+2. Initializes `.env` from `.env.example` if needed, fills missing local session/encryption/service secrets, preserves existing values, and restricts file permissions. It never prints secrets.
+3. Builds and starts PostgreSQL, Redis, the Python AI service, NestJS API, BullMQ worker, and the Next.js server with Docker Compose.
+4. Applies Prisma migrations and seeds the empty owner profile before the API starts. It waits for service health checks before reporting success.
+
+| Service            | Address                          |
+| ------------------ | -------------------------------- |
+| Next.js web server | http://localhost:3000            |
+| NestJS API         | http://localhost:4000/api/health |
+| Python AI service  | http://localhost:8000/health     |
+| PostgreSQL         | localhost:5433                   |
+| Redis              | localhost:6380                   |
+
+```sh
+npm stop                  # Stop containers; preserve volumes
+npm run restart           # Stop, rebuild, and start all services
+npm run status            # Container health/status
+npm run logs -- api       # Follow one service (web/api/ai/worker/db/redis)
+npm run logs              # Follow all logs
+npm run setup             # Initialize local configuration without Docker startup
+```
+
+Set OWNER_EMAIL to your verified Clerk email (or configure CLERK_OWNER_USER_ID), plus NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY in `.env` before signing in. The local launcher can reuse the development keys created by Clerk CLI in apps/web/.env.local. Services run without them, but private dashboard access remains locked. The launcher does not fabricate credentials or enable a development authentication bypass. OPENAI_API_KEY is optional; only the Python container receives it. The worker calls Python over authenticated HTTP and owns task retries, database persistence, and AI budget reservations.
+
+The web runs the actual Next.js Node server (`next start`), the API is a separate NestJS process, and AI generation/interview preparation run in Python/FastAPI. The Node worker performs collection, scheduling, and orchestration; it no longer calls OpenAI or composes live CVs itself.
+
+## Frontend-only demo
 
 ```sh
 npm ci
-npm run dev -w @jobnester/web
+npm run dev:demo
 ```
 
-Open http://localhost:3000. No credentials are required. Demo job listings, compensation, companies' example roles, and work history are illustrative, not live vacancies or verified personal claims. Changes persist in this browser. Reset Demo restores the sample workspace. Demo scans never invent new results; demo contact forms never send messages. Demo document downloads are TXT. The live API exports PDF and DOCX.
+Open http://localhost:3000. Stop the Docker web container first if it is using that port. Demo listings, compensation, and work history are illustrative. Changes stay in this browser. Demo scans do not invent jobs and demo contact forms do not send messages. Demo exports TXT; live mode exports PDF/DOCX. `npm run dev:demo` explicitly selects demo mode even when a live `.env` exists.
 
-## Run the live system
+### Running individual services on the host
 
-Requires Node.js 22 and Docker (or your own PostgreSQL 16 and Redis 7).
+For development, install npm dependencies, create a Python virtual environment and install `apps/ai/requirements.txt`, then run `python -m uvicorn app.main:app --port 8000` from `apps/ai` with AI_SERVICE_TOKEN exported to match `.env`. Set AI_SERVICE_URL=http://localhost:8000 in the root `.env`. The API/worker read it automatically. Start the desired npm workspace with `npm run dev -w @jobnester/api`, `npm run dev -w @jobnester/worker`, or `npm run dev:web`.
 
-```sh
-cp .env.example .env
-# Populate OWNER_EMAIL, AUTH_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
-# TOKEN_ENCRYPTION_KEY, and uncomment NEXT_PUBLIC_API_URL.
-docker compose up -d db redis
-npm run db:generate
-npm run db:migrate
-npm run db:seed
-npm run dev
-```
+### Clerk authentication and integration OAuth
 
-Generate each secret independently with `openssl rand -hex 32`. Set the encryption key to 64 hexadecimal characters. Use a real Google account for OWNER_EMAIL. The live dashboard fails closed without owner authentication. No database records are populated with demo experience.
+Clerk manages login at `/sign-in`, with protected editing at `/portfolio/edit` and draft preview at `/portfolio/preview`. The API validates Clerk JWTs and binds your existing single-owner profile to the authorized Clerk user. Existing Auth.js cookies are no longer accepted; sign in again through Clerk. No passwords or career records are copied or deleted.
 
-The web dev server reads the root .env through its Next config. API and worker load the same file. Changing NEXT_PUBLIC_API_URL requires restarting the dev server or rebuilding the static web export. Frontend and API URLs must use the same hostname locally (use localhost for both).
+For the optional Gmail integration, create a Google OAuth Web application. Add these exact development callback URLs:
 
-### OAuth configuration
-
-Create a Google OAuth Web application. Add these exact development callback URLs:
-
-- `http://localhost:4000/api/auth/callback/google` — owner sign-in
 - `http://localhost:4000/api/integrations/gmail/callback` — optional Gmail read-only connection
 
-Enable Gmail API, configure the OAuth consent screen, and add your account as a test user while developing. Gmail read-only is a restricted scope; production verification requirements depend on your deployment and Google's policy. Google OAuth testing grants can expire, so reconnect when required. Sign-in requires the allowlisted, verified Google email. Enable MFA on that Google account.
+Enable Gmail API, configure the OAuth consent screen, and add your account as a test user while developing. Gmail read-only is a restricted scope; production verification requirements depend on your deployment and Google's policy. Google OAuth testing grants can expire, so reconnect when required. Owner login uses Clerk. Google OAuth is used only for Gmail access. Configure MFA in your Clerk application if desired.
 
 Optional LinkedIn basic identity connection requires an approved **Sign In with LinkedIn using OpenID Connect** product and the callback `http://localhost:4000/api/integrations/linkedin/callback`. Configure LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET. It imports only the name and verified email when explicitly requested; it cannot read full work history, saved jobs, messages, or applications. Indeed uses manual job links and pasted descriptions. No restricted scraping or auto-submission is implemented.
 
@@ -59,29 +81,23 @@ AI spending uses a conservative reservation ledger with database locking, not pr
 
 ### Portfolio media and contact email
 
-Hosted HTTPS image/video URLs work without object storage. Optional uploads support PNG, JPEG, WebP, and MP4 up to 20 MB. Set S3_BUCKET, AWS_REGION and AWS credentials; S3_ENDPOINT supports compatible services. Keep the bucket private. The API exposes signed media URLs only for assets referenced by the published portfolio. Removing a published asset revokes fresh access; previously signed links expire after 60 seconds. Draft assets remain private.
+Media uploads use a private local directory and the portfolio_uploads Docker volume by default. Draft files are owner-only; published references become accessible. Set ASSET_STORAGE=s3 to use a private bucket instead. Hosted HTTPS image/video URLs work without object storage. Optional uploads support PNG, JPEG, WebP, and MP4 up to 20 MB. Set S3_BUCKET, AWS_REGION and AWS credentials; S3_ENDPOINT supports compatible services. Keep the bucket private. The API exposes signed media URLs only for assets referenced by the published portfolio. Removing a published asset revokes fresh access; previously signed links expire after 60 seconds. Draft assets remain private.
 
-Contact inquiries are stored in PostgreSQL. Optional notifications use Resend when RESEND_API_KEY, CONTACT_FROM_EMAIL, and CONTACT_NOTIFY_EMAIL are set. Verify the sending domain with the provider. Notification messages contain no inquiry contents; read those in the dashboard.
+Contact inquiries are stored in PostgreSQL and queued for delivery of the complete message to your personal inbox. Configure SMTP_HOST/SMTP_PORT (and SMTP_USER/SMTP_PASSWORD where required), or RESEND_API_KEY. Set CONTACT_FROM_EMAIL to a verified sender. Choose the private recipient in the portfolio editor or use CONTACT_NOTIFY_EMAIL/OWNER_EMAIL. Visitor email is Reply-To. Delivery failures surface in task history and are retried; if delivery is unconfigured the form reports that explicitly instead of falsely confirming delivery.
 
 Professional inbox hosting and domain registration remain external services. The application never creates a mailbox automatically.
 
 ## Production deployment
 
-```sh
-# Fill .env with production origins, database credentials, and secrets.
-# Set NEXT_PUBLIC_API_URL=https://api.yourdomain.com
-docker compose --profile full up --build -d
-```
+Fill `.env` with your real origins and OAuth credentials, then use `npm start`. Configure TLS and replace local database passwords before exposing services. The supplied ports bind to loopback. Set NEXT_PUBLIC_API_URL to your browser-accessible API URL; the launcher rebuilds Next.js to embed it. Internal API/worker requests use the Docker address http://ai:8000.
 
-Use a TLS reverse proxy. The web export runs in Nginx; API and worker run as a non-root Node user. Database/Redis ports bind only to loopback in the supplied compose file. Replace local database passwords. For managed services, replace connection URLs in your deployment rather than using the local container overrides. Use same-site domains for the dashboard and API so OAuth cookies work reliably.
+- `app.yourdomain.com` → Next.js server on port 3000
+- `api.yourdomain.com` → NestJS API on port 4000
+- `yourdomain.com` → `/portfolio` on the Next.js server
 
-- `app.yourdomain.com` → static web app
-- `api.yourdomain.com` → NestJS API
-- `yourdomain.com` → the same static export, with `/` mapped to `/portfolio.html`
+Keep the Python service internal; only API and worker should call its private endpoints. AI_SERVICE_TOKEN protects those calls. Public portfolio origins belong in PUBLIC_PORTFOLIO_ORIGINS. Use same-site dashboard/API domains for OAuth cookies.
 
-An example public-host Nginx config is in deploy/portfolio.nginx.conf. The portfolio is a single page with work, experience, resume download, and contact sections; project case studies open in dialogs. Add the public origin to PUBLIC_PORTFOLIO_ORIGINS. An example reverse proxy must be adapted with your actual TLS certificates and hostnames. Set TRUST_PROXY=1 only behind one trusted proxy.
-
-The Sites deployment publishes the static browser-local demo privately. It does not host PostgreSQL, Redis, the NestJS API, or the worker. Deploy those services and build with NEXT_PUBLIC_API_URL to use live mode. Public employer sharing requires a public portfolio host; the private Sites preview cannot be shared with unauthenticated employers.
+The earlier Sites preview remains a static browser-local demo. `npm run build:site` produces that separate static export; normal `npm run build` produces the Next.js server build. Docker startup does not publish or change the hosted demo.
 
 ### Operations
 
@@ -99,8 +115,10 @@ npm run db:generate
 npm run typecheck
 npm test
 npm run build
-# With local PostgreSQL/Redis running and DATABASE_URL/REDIS_URL set:
+# With PostgreSQL, Redis, and Python AI running (npm start), and .env configured:
 npm run test:integration
+# Python tests inside the running AI container:
+npm run test:ai
 # Playwright Chromium (or PLAYWRIGHT_CHROME=1 for installed Google Chrome):
 npx playwright install chromium
 npm run test:e2e
@@ -115,3 +133,5 @@ Integration tests temporarily replace the owner profile and restore it on comple
 The implemented product covers the core job loop, portfolio CMS, Gmail classification, recruiter contacts, basic analytics/advice, and role-specific practice kits. The practice kits and career advice are deterministic helpers, not a live conversational interview coach. Full LinkedIn/Indeed saved-job access remains dependent on approved provider capabilities. Native mobile apps, email sending on your behalf, semantic embeddings, negotiated-offer tools, portfolio visitor analytics, and statistical outcome modeling are not part of this release. Job listings are refreshed when revisited; vanished postings are not automatically treated as withdrawn applications.
 
 See docs/architecture.md for the API, data flow, and deployment layout.
+
+For the portfolio workflow, see [docs/portfolio.md](docs/portfolio.md).

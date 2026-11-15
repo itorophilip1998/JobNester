@@ -7,7 +7,7 @@ import type { Request, Response } from "express";
 import { apiOrigin, webOrigin } from "./config.js";
 import { db } from "./service.js";
 import { seal } from "./security.js";
-export async function connectLinkedIn(res: Response) {
+export async function connectLinkedIn(res: Response, asJson = false) {
   if (
     !process.env.LINKEDIN_CLIENT_ID ||
     !process.env.LINKEDIN_CLIENT_SECRET ||
@@ -24,16 +24,17 @@ export async function connectLinkedIn(res: Response) {
     maxAge: 10 * 60 * 1000,
     path: "/api/integrations/linkedin",
   });
-  res.redirect(
+  const url =
     "https://www.linkedin.com/oauth/v2/authorization?" +
-      new URLSearchParams({
-        response_type: "code",
-        client_id: process.env.LINKEDIN_CLIENT_ID,
-        redirect_uri: `${apiOrigin}/api/integrations/linkedin/callback`,
-        scope: "openid profile email",
-        state,
-      }),
-  );
+    new URLSearchParams({
+      response_type: "code",
+      client_id: process.env.LINKEDIN_CLIENT_ID,
+      redirect_uri: `${apiOrigin}/api/integrations/linkedin/callback`,
+      scope: "openid profile email",
+      state,
+    });
+  if (asJson) res.json({ url });
+  else res.redirect(url);
 }
 export async function callbackLinkedIn(req: Request, res: Response) {
   const cookie = (req.headers.cookie || "")

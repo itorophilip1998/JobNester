@@ -1,3 +1,5 @@
+import { extractCv } from "./portfolio-import.js";
+import { aiRequest, interviewResponse } from "./ai-client.js";
 import "reflect-metadata";
 import "./config.js";
 import { NestFactory } from "@nestjs/core";
@@ -14,6 +16,7 @@ import {
   UseInterceptors,
   Inject,
   BadRequestException,
+  ServiceUnavailableException,
   NotFoundException,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
@@ -28,15 +31,14 @@ import { rateLimit } from "express-rate-limit";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import PDFDocument from "pdfkit";
 import { Document, Packer, Paragraph, TextRun } from "docx";
-import pdf from "pdf-parse/lib/pdf-parse.js";
-import mammoth from "mammoth";
+
 import { z } from "zod";
 import { AppService, db, json } from "./service.js";
 import { apiOrigin, webOrigin, required, ownerEmail } from "./config.js";
-import { authHandler, isOwner } from "./auth.js";
+import { isOwner } from "./auth.js";
 import { seal } from "./security.js";
-import { inspectDocx } from "./documents.js";
-import { uploadAsset, assetUrl } from "./assets.js";
+
+import { uploadAsset, assetUrl, localAsset, publishedAsset } from "./assets.js";
 import { connectLinkedIn, callbackLinkedIn } from "./linkedin.js";
 import type { Portfolio, Profile, Job } from "@jobnester/core";
 function pdfBuffer(text: string): Promise<Buffer> {
@@ -77,22 +79,20 @@ async function documentResponse(
       sections: [
         {
           properties: {},
-          children: text
-            .split("\n")
-            .map(
-              (line, i) =>
-                new Paragraph({
-                  spacing: { after: 120 },
-                  children: [
-                    new TextRun({
-                      text: line,
-                      font: "Arial",
-                      size: i === 0 ? 36 : 21,
-                      bold: i === 0 || ["SKILLS", "EXPERIENCE"].includes(line),
-                    }),
-                  ],
-                }),
-            ),
+          children: text.split("\n").map(
+            (line, i) =>
+              new Paragraph({
+                spacing: { after: 120 },
+                children: [
+                  new TextRun({
+                    text: line,
+                    font: "Arial",
+                    size: i === 0 ? 36 : 21,
+                    bold: i === 0 || ["SKILLS", "EXPERIENCE"].includes(line),
+                  }),
+                ],
+              }),
+          ),
         },
       ],
     });
@@ -139,31 +139,9 @@ class AppController {
     }),
   )
   async import(@UploadedFile() file: Express.Multer.File) {
-    if (!file)
-      throw new BadRequestException(
-        "Upload a PDF, DOCX, or TXT document under 5 MB.",
-      );
-    let text = "";
-    try {
-      if (file.originalname.toLowerCase().endsWith(".pdf")) {
-        if (!file.buffer.subarray(0, 5).equals(Buffer.from("%PDF-")))
-          throw Error("Invalid PDF");
-        text = (await pdf(file.buffer)).text;
-      } else if (file.originalname.toLowerCase().endsWith(".docx")) {
-        inspectDocx(file.buffer);
-        text = (await mammoth.extractRawText({ buffer: file.buffer })).value;
-      } else text = file.buffer.toString("utf8");
-    } catch {
-      throw new BadRequestException(
-        "This document could not be read. Try a text-based PDF, DOCX, or plain text.",
-      );
-    }
-    if (text.length > 100000)
-      throw new BadRequestException(
-        "Document text exceeds 100,000 characters.",
-      );
-    return { text, reviewRequired: true };
+    return { text: await extractCv(file), reviewRequired: true };
   }
+
   @Post("assets/upload")
   @UseInterceptors(
     FileInterceptor("file", {
@@ -178,14 +156,23 @@ class AppController {
     @Res() res: Response,
   ) {
     res.setHeader("Cache-Control", "no-store");
-    res.redirect(await assetUrl(id, false));
+    const file = await localAsset(id);
+    if (file) {
+      res.type(file.asset.mime).setHeader("X-Content-Type-Options", "nosniff");
+      res.send(file.buffer);
+    } else res.redirect(await assetUrl(id, false));
   }
   @Get("public/assets/:id") async publicAsset(
     @Param("id") id: string,
     @Res() res: Response,
   ) {
     res.setHeader("Cache-Control", "no-store");
-    res.redirect(await assetUrl(id, true));
+    await publishedAsset(id);
+    const file = await localAsset(id);
+    if (file) {
+      res.type(file.asset.mime).setHeader("X-Content-Type-Options", "nosniff");
+      res.send(file.buffer);
+    } else res.redirect(await assetUrl(id, true));
   }
   @Get("resumes/:id/download") async download(
     @Param("id") id: string,
@@ -200,6 +187,40 @@ class AppController {
       r.name,
     );
   }
+  @Get("portfolio/draft") async portfolioDraft() {
+    return (await this.service.owner()).portfolioDraft;
+  }
+  @Post("portfolio/from-cv")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+    }),
+  )
+  async portfolioFromCv(@UploadedFile() file: Express.Multer.File) {
+    const text = await extractCv(file);
+    const generated = await aiRequest(
+      "/v1/portfolio/from-cv",
+      { text },
+      z.object({
+        name: z.string(),
+        headline: z.string(),
+        bio: z.string(),
+        email: z.string(),
+        github: z.string(),
+        skills: z.array(z.string()),
+        experience: z.array(z.any()),
+        certifications: z.array(z.any()),
+        projects: z.array(z.any()),
+        reviewRequired: z.boolean(),
+        extractedText: z.string(),
+      }),
+    );
+    const upload = await uploadAsset(file);
+    return {
+      ...generated,
+      resume: { url: upload.url, name: file.originalname },
+    };
+  }
   @Get("public/portfolio") async publicPortfolio() {
     const owner = await this.service.owner();
     if (!owner.portfolioPublished)
@@ -209,6 +230,10 @@ class AppController {
   @Get("public/resume") async publicResume(@Res() res: Response) {
     const owner = await this.service.owner();
     const p = owner.portfolioPublished as unknown as Portfolio | null;
+    if (p?.resume?.url) {
+      res.redirect(p.resume.url);
+      return;
+    }
     if (!p?.publicResumeId) throw new NotFoundException("No public resume");
     const r = await db.resume.findFirst({
       where: { id: p.publicResumeId, ready: true },
@@ -233,12 +258,24 @@ class AppController {
     const owner = await this.service.owner();
     if (!owner.portfolioPublished)
       throw new NotFoundException("Portfolio not published");
+    const recipient =
+      owner.contactRecipient ||
+      process.env.CONTACT_NOTIFY_EMAIL ||
+      process.env.OWNER_EMAIL;
+    if (
+      !recipient ||
+      !process.env.CONTACT_FROM_EMAIL ||
+      (!process.env.RESEND_API_KEY && !process.env.SMTP_HOST)
+    )
+      throw new ServiceUnavailableException(
+        "Email delivery is not configured. Please use the published email link.",
+      );
     const { website, ...inquiry } = data.data;
-    await db.inquiry.create({ data: inquiry });
-    if (process.env.CONTACT_NOTIFY_EMAIL && process.env.RESEND_API_KEY)
-      await this.service.task("notify", { name: inquiry.name }).catch(() => {});
-    return { ok: true };
+    const record = await db.inquiry.create({ data: inquiry });
+    await this.service.task("notify", { inquiryId: record.id });
+    return { ok: true, emailStatus: "queued" };
   }
+
   @Get("interview/:id") async interview(@Param("id") id: string) {
     const [record, owner] = await Promise.all([
       db.job.findUniqueOrThrow({ where: { id } }),
@@ -246,25 +283,24 @@ class AppController {
     ]);
     const job = record.payload as unknown as Job;
     const p = owner.profile as unknown as Profile;
-    return {
-      questions: [
-        `Which of your projects best demonstrates the experience needed for ${job.title}?`,
-        `Explain a production decision involving ${job.technologies[0] || "your main technology stack"}.`,
-        "Describe a tradeoff where reliability, delivery speed, and cost competed.",
-        "How would you communicate technical decisions to a distributed team?",
-      ],
-      coding: `Build a validated, paginated API with tests using ${job.technologies[0] || "your preferred language"}. Discuss complexity and failure cases.`,
-      systemDesign: `Design a reliable event-driven ingestion system. Discuss idempotency, storage, monitoring, and scaling. Relate choices to the requirements of ${job.title}.`,
-      answerOutline:
-        p.evidence
-          .slice(0, 2)
-          .map((e) => e.text)
-          .join("\n\n") ||
-        "Add and review your experience before preparing evidence-based answers.",
-    };
+    try {
+      return await aiRequest(
+        "/v1/interviews/prepare",
+        { profile: p, job },
+        interviewResponse,
+      );
+    } catch (error) {
+      throw new ServiceUnavailableException(
+        error instanceof Error ? error.message : "AI service unavailable",
+      );
+    }
   }
-  @Get("integrations/linkedin/connect") linkedinConnect(@Res() res: Response) {
-    return connectLinkedIn(res);
+
+  @Get("integrations/linkedin/connect") linkedinConnect(
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    return connectLinkedIn(res, req.headers.accept === "application/json");
   }
   @Get("integrations/linkedin/callback") linkedinCallback(
     @Req() req: Request,
@@ -272,7 +308,10 @@ class AppController {
   ) {
     return callbackLinkedIn(req, res);
   }
-  @Get("integrations/gmail/connect") async gmailConnect(@Res() res: Response) {
+  @Get("integrations/gmail/connect") async gmailConnect(
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
     required("GOOGLE_CLIENT_ID");
     required("GOOGLE_CLIENT_SECRET");
     required("TOKEN_ENCRYPTION_KEY");
@@ -294,7 +333,9 @@ class AppController {
       state,
       login_hint: ownerEmail || "",
     });
-    res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+    const url = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
+    if (req.headers.accept === "application/json") res.json({ url });
+    else res.redirect(url);
   }
   @Get("integrations/gmail/callback") async gmailCallback(
     @Req() req: Request,
@@ -400,11 +441,16 @@ async function main() {
   );
   app.use(bodyJson({ limit: "2mb" }));
   app.use(urlencoded({ extended: false, limit: "100kb" }));
-  app.use("/api/auth", authHandler);
+
   app.use(async (req: Request, res: Response, next: () => void) => {
     if (
       req.method === "OPTIONS" ||
       req.path === "/api/health" ||
+      (req.method === "GET" &&
+        [
+          "/api/integrations/gmail/callback",
+          "/api/integrations/linkedin/callback",
+        ].includes(req.path)) ||
       req.path.startsWith("/api/public/")
     )
       return next();

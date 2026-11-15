@@ -146,7 +146,34 @@ export interface Resume {
   coverLetter: string;
   evidenceIds: string[];
 }
+export {
+  portfolioDefaults,
+  portfolioSections,
+  productLink,
+  publicAssetReferences,
+} from "./portfolio.js";
+export type { PortfolioSection } from "./portfolio.js";
 export interface Portfolio {
+  layout?: "studio" | "editorial";
+  accentColor?: string;
+  motion?: "none" | "subtle" | "expressive";
+  heroHeading?: string;
+  avatar?: string;
+  sections?: Partial<
+    Record<"work" | "about" | "resume" | "certifications" | "contact", boolean>
+  >;
+  sectionOrder?: ("work" | "about" | "resume" | "certifications" | "contact")[];
+  resume?: { url: string; name: string };
+  certifications?: {
+    id: string;
+    name: string;
+    issuer: string;
+    issuedAt: string;
+    credentialUrl: string;
+    image: string;
+    description: string;
+    documentType?: "image" | "pdf";
+  }[];
   name: string;
   headline: string;
   bio: string;
@@ -162,6 +189,7 @@ export interface Portfolio {
     url: string;
     image: string;
     video?: string;
+    repositoryUrl?: string;
   }[];
   experience: Evidence[];
   published: boolean;
@@ -230,6 +258,8 @@ export interface AppState {
   threads: MailThread[];
   gmailConnected: boolean;
   linkedinConnected?: boolean;
+  contactRecipient?: string;
+  emailDeliveryConfigured?: boolean;
 }
 export function emptyState(): AppState {
   return {

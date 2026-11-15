@@ -1,3 +1,4 @@
+name: jobnester
 services:
   db:
     image: postgres:16-alpine
@@ -12,6 +13,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
   redis:
     image: redis:7-alpine
     command:
@@ -29,44 +31,119 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
+  ai:
+    build:
+      context: .
+      dockerfile: apps/ai/Dockerfile
+    environment:
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:?Run npm run setup first}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+    ports: ["127.0.0.1:8000:8000"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
   api:
-    profiles: ["full"]
     build: { context: ., target: runtime }
     env_file: .env
     environment:
       DATABASE_URL: postgresql://jobnester:${POSTGRES_PASSWORD:-jobnester_local_only}@db:5432/jobnester
       REDIS_URL: redis://redis:6379
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+      AI_SERVICE_URL: http://ai:8000
+      OPENAI_API_KEY: ""
+      PORT: "4000"
+      UPLOAD_DIRECTORY: /data/uploads
     command:
       [
         "sh",
         "-c",
-        "npm run db:migrate && npm run db:seed && npm run start -w @jobnester/api",
+        "npm run db:migrate && npm run db:seed && exec npm run start -w @jobnester/api",
       ]
+    volumes: ["portfolio_uploads:/data/uploads"]
     ports: ["127.0.0.1:4000:4000"]
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
+      ai: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
     restart: unless-stopped
   worker:
-    profiles: ["full"]
     build: { context: ., target: runtime }
     env_file: .env
     environment:
       DATABASE_URL: postgresql://jobnester:${POSTGRES_PASSWORD:-jobnester_local_only}@db:5432/jobnester
       REDIS_URL: redis://redis:6379
+      AI_SERVICE_URL: http://ai:8000
+      OPENAI_API_KEY: ""
     command: ["npm", "run", "start", "-w", "@jobnester/worker"]
-    depends_on: [api]
+    depends_on:
+      api: { condition: service_healthy }
+      ai: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "const fs=require('fs');process.exit(Date.now()-fs.statSync('/tmp/jobnester-worker-heartbeat').mtimeMs<120000?0:1)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     restart: unless-stopped
   web:
-    profiles: ["full"]
     build:
       context: .
       target: web
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
-    ports: ["127.0.0.1:3000:80"]
-    depends_on: [api]
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+    environment:
+      NEXT_PUBLIC_CLERK_SIGN_IN_URL: /sign-in
+      NEXT_PUBLIC_CLERK_SIGN_UP_URL: /sign-up
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     restart: unless-stopped
 volumes:
+  portfolio_uploads:
   postgres_data:
   redis_data:

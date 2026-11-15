@@ -1,2 +1,27 @@
-import {defineConfig,devices} from '@playwright/test';
-export default defineConfig({testDir:'./tests/e2e',fullyParallel:false,workers:1,timeout:30000,use:{baseURL:process.env.TEST_BASE_URL||'http://127.0.0.1:3000',...devices['Desktop Chrome'],...(process.env.PLAYWRIGHT_CHROME==='1'?{channel:'chrome'}:{}),screenshot:'only-on-failure',trace:'retain-on-failure'},webServer:process.env.TEST_BASE_URL?undefined:{command:'npm run dev -w @jobnester/web -- --hostname 127.0.0.1',url:'http://127.0.0.1:3000',reuseExistingServer:!process.env.CI,timeout:120000}});
+import { defineConfig, devices } from "@playwright/test";
+export default defineConfig({
+  testDir: "./tests/e2e",
+  fullyParallel: false,
+  workers: 1,
+  timeout: 30000,
+  use: {
+    baseURL: process.env.TEST_BASE_URL || "http://127.0.0.1:3000",
+    ...devices["Desktop Chrome"],
+    ...(process.env.PLAYWRIGHT_CHROME === "1" ? { channel: "chrome" } : {}),
+    screenshot: "only-on-failure",
+    trace: "retain-on-failure",
+  },
+  webServer: process.env.TEST_BASE_URL
+    ? undefined
+    : {
+        command: "npm run dev -w @jobnester/web -- --hostname 127.0.0.1",
+        url: "http://127.0.0.1:3000",
+        env: {
+          NEXT_PUBLIC_API_URL: "",
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "",
+          CLERK_SECRET_KEY: "",
+        },
+        reuseExistingServer: !process.env.CI,
+        timeout: 120000,
+      },
+});

@@ -1,3 +1,8 @@
+import { createServer } from "node:net";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -7,16 +12,66 @@ test(
   "PostgreSQL, queue, CV worker, duplicate prevention, public snapshot and application integrity",
   { skip: process.env.RUN_INTEGRATION !== "1", timeout: 60000 },
   async () => {
+    process.env.JOB_QUEUE_NAME = `integration-${process.pid}-${Date.now()}`;
     const { AppService, db, queue, json } =
       await import("../apps/api/src/service.js");
     const service = new AppService();
     const owner = await service.owner();
     const tag = `integration-${Date.now()}`;
+    const uploadDirectory = await mkdtemp(
+      join(tmpdir(), "jobnester-integration-"),
+    );
+    const messages: string[] = [];
+    const smtp = createServer((socket) => {
+      socket.write("220 localhost SMTP test\r\n");
+      let buffer = "",
+        data = false,
+        message = "";
+      socket.on("data", (bytes) => {
+        buffer += bytes.toString();
+        let end;
+        while ((end = buffer.indexOf("\r\n")) >= 0) {
+          const line = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          if (data) {
+            if (line === ".") {
+              messages.push(message);
+              message = "";
+              data = false;
+              socket.write("250 Message accepted\r\n");
+            } else message += line + "\n";
+          } else if (/^EHLO|^HELO/i.test(line))
+            socket.write("250-localhost\r\n250 SIZE 1000000\r\n");
+          else if (/^DATA/i.test(line)) {
+            data = true;
+            socket.write("354 End with dot\r\n");
+          } else if (/^QUIT/i.test(line)) {
+            socket.end("221 Bye\r\n");
+          } else socket.write("250 OK\r\n");
+        }
+      });
+    });
+    await new Promise<void>((resolve) => smtp.listen(0, "127.0.0.1", resolve));
+    const smtpEnv = {
+      SMTP_HOST: "127.0.0.1",
+      SMTP_PORT: String((smtp.address() as { port: number }).port),
+      SMTP_SECURE: "false",
+      SMTP_USER: "",
+      RESEND_API_KEY: "",
+      CONTACT_FROM_EMAIL: "portfolio@example.com",
+      CONTACT_NOTIFY_EMAIL: "owner@example.com",
+    };
+    let inquiryId = "";
+    const assetIds: string[] = [];
     let worker: ReturnType<typeof spawn> | undefined;
     let server: ReturnType<typeof spawn> | undefined;
     let jobId = "",
       taskId = "";
     try {
+      await db.owner.update({
+        where: { id: "owner" },
+        data: { clerkUserId: null },
+      });
       const p = {
         ...emptyState().profile,
         name: "Integration Engineer",
@@ -89,7 +144,7 @@ test(
         ["--import", "tsx", "apps/worker/src/main.ts"],
         {
           cwd: process.cwd(),
-          env: { ...process.env, OPENAI_API_KEY: "" },
+          env: { ...process.env, ...smtpEnv, OPENAI_API_KEY: "" },
           stdio: ["ignore", "pipe", "pipe"],
         },
       );
@@ -110,8 +165,30 @@ test(
         }
         await new Promise((r) => setTimeout(r, 300));
       }
-      assert.ok(finished, "CV worker should complete");
-      const secret = "integration-only-secret-01234567890123456789012345";
+      assert.ok(finished, "CV worker should complete. " + logs);
+      const { privateKey, publicKey } = generateKeyPairSync("rsa", {
+        modulusLength: 2048,
+      });
+      const encode = ({ email }: { email: string }) => {
+        const sub =
+          email === "owner@example.com" ? "user_owner_test" : "user_other_test";
+        const header = Buffer.from(
+          JSON.stringify({ alg: "RS256", typ: "JWT", cat: "cl_B7d4PD111AAA" }),
+        ).toString("base64url");
+        const now = Math.floor(Date.now() / 1000);
+        const body = Buffer.from(
+          JSON.stringify({
+            sub,
+            iss: "https://test.clerk.accounts.dev",
+            azp: "http://localhost:3000",
+            sid: "sess_test",
+            iat: now,
+            nbf: now - 5,
+            exp: now + 300,
+          }),
+        ).toString("base64url");
+        return `${header}.${body}.${sign("RSA-SHA256", Buffer.from(`${header}.${body}`), privateKey).toString("base64url")}`;
+      };
       server = spawn(
         process.execPath,
         ["--import", "tsx", "apps/api/src/main.ts"],
@@ -119,10 +196,15 @@ test(
           cwd: process.cwd(),
           env: {
             ...process.env,
+            ...smtpEnv,
+            UPLOAD_DIRECTORY: uploadDirectory,
             PORT: "4011",
             API_ORIGIN: "http://localhost:4011",
             WEB_ORIGIN: "http://localhost:3000",
-            AUTH_SECRET: secret,
+            CLERK_JWT_KEY: publicKey
+              .export({ type: "spki", format: "pem" })
+              .toString(),
+            CLERK_OWNER_USER_ID: "user_owner_test",
             OWNER_EMAIL: "owner@example.com",
             GOOGLE_CLIENT_ID: "test-client",
             GOOGLE_CLIENT_SECRET: "test-secret",
@@ -149,26 +231,26 @@ test(
         (await fetch("http://localhost:4011/api/state")).status,
         401,
       );
-      const { encode } = await import("@auth/core/jwt");
-      const jwt = await encode({
-        secret,
-        salt: "authjs.session-token",
-        token: { email: "owner@example.com" },
-      });
-      const headers = { Cookie: `authjs.session-token=${jwt}` };
+      for (const provider of ["gmail", "linkedin"])
+        assert.equal(
+          (
+            await fetch(
+              `http://localhost:4011/api/integrations/${provider}/callback?code=fake&state=fake`,
+            )
+          ).status,
+          400,
+        );
+      const jwt = encode({ email: "owner@example.com" });
+      const headers = { Authorization: `Bearer ${jwt}` };
       assert.equal(
         (await fetch("http://localhost:4011/api/state", { headers })).status,
         200,
       );
-      const wrongJwt = await encode({
-        secret,
-        salt: "authjs.session-token",
-        token: { email: "other@example.com" },
-      });
+      const wrongJwt = encode({ email: "other@example.com" });
       assert.equal(
         (
           await fetch("http://localhost:4011/api/state", {
-            headers: { Cookie: `authjs.session-token=${wrongJwt}` },
+            headers: { Authorization: `Bearer ${wrongJwt}` },
           })
         ).status,
         401,
@@ -220,7 +302,11 @@ test(
             body: form,
           },
         );
-        assert.equal(response.status, 201);
+        assert.equal(
+          response.status,
+          201,
+          `${name}: ${await response.clone().text()}`,
+        );
         const parsed = (await response.json()) as any;
         assert.ok(
           parsed.text.includes("Built TypeScript APIs backed by PostgreSQL."),
@@ -282,6 +368,83 @@ test(
         "Published Snapshot",
       );
       assert.equal((updated.portfolioDraft as any).name, "Unpublished Draft");
+      const importedForm = new FormData();
+      importedForm.append("file", new Blob([docx]), "original-resume.docx");
+      const importedResponse = await fetch(
+        "http://localhost:4011/api/portfolio/from-cv",
+        {
+          method: "POST",
+          headers: { ...headers, Origin: "http://localhost:3000" },
+          body: importedForm,
+        },
+      );
+      assert.equal(importedResponse.status, 201);
+      const imported = (await importedResponse.json()) as any;
+      assert.equal(imported.reviewRequired, true);
+      assert.ok(imported.extractedText.includes("Integration Engineer"));
+      const assetId = imported.resume.url.split("/").at(-1);
+      assetIds.push(assetId);
+      assert.equal(
+        (await fetch(`http://localhost:4011/api/public/assets/${assetId}`))
+          .status,
+        404,
+      );
+      assert.equal(
+        (await fetch("http://localhost:4011/api/portfolio/draft")).status,
+        401,
+      );
+      await service.action("portfolio.save", {
+        ...portfolio,
+        resume: imported.resume,
+      });
+      await service.action("portfolio.publish", {});
+      assert.equal(
+        (await fetch(`http://localhost:4011/api/public/assets/${assetId}`))
+          .status,
+        200,
+      );
+      await service.action("portfolio.contact-settings", {
+        email: "owner@example.com",
+      });
+      const contactResponse = await fetch(
+        "http://localhost:4011/api/public/contact",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Test Recruiter",
+            email: `${tag}@example.com`,
+            message:
+              "A complete inquiry delivered through the loopback SMTP test server.",
+            website: "",
+          }),
+        },
+      );
+      assert.equal(contactResponse.status, 201);
+      const inquiry = await db.inquiry.findFirstOrThrow({
+        where: { email: `${tag}@example.com` },
+      });
+      inquiryId = inquiry.id;
+      for (let i = 0; i < 50 && !messages.length; i++)
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.equal(messages.length, 1);
+      assert.ok(messages[0].includes("A complete inquiry delivered"));
+      assert.ok(messages[0].includes("Reply-To:"));
+      assert.equal(
+        (await db.inquiry.findUniqueOrThrow({ where: { id: inquiryId } }))
+          .deliveryStatus,
+        "delivered",
+      );
+      await service.action("portfolio.unpublish", {});
+      assert.equal(
+        (await fetch("http://localhost:4011/api/public/portfolio")).status,
+        404,
+      );
+      assert.equal(
+        (await fetch(`http://localhost:4011/api/public/assets/${assetId}`))
+          .status,
+        404,
+      );
     } finally {
       if (server && server.exitCode === null) {
         server.kill("SIGTERM");
@@ -313,6 +476,9 @@ test(
       await db.owner.update({
         where: { id: "owner" },
         data: {
+          clerkUserId:
+            owner.clerkUserId === "user_owner_test" ? null : owner.clerkUserId,
+          contactRecipient: owner.contactRecipient,
           profile: json(owner.profile),
           modes: json(owner.modes),
           settings: json(owner.settings),
@@ -323,6 +489,24 @@ test(
               : json(owner.portfolioPublished),
         },
       });
+      if (inquiryId) await db.inquiry.deleteMany({ where: { id: inquiryId } });
+      if (assetIds.length)
+        await db.asset.deleteMany({ where: { id: { in: assetIds } } });
+      await new Promise<void>((resolve) => smtp.close(() => resolve()));
+      await rm(uploadDirectory, { recursive: true, force: true });
+      const queued = await queue.getJobs([
+        "completed",
+        "failed",
+        "wait",
+        "active",
+        "delayed",
+      ]);
+      await db.task.deleteMany({
+        where: {
+          id: { in: queued.map((job) => job.data.taskId).filter(Boolean) },
+        },
+      });
+      await queue.obliterate({ force: true });
       await queue.close();
       await db.$disconnect();
     }

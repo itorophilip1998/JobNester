@@ -10,3 +10,10 @@ node_modules
 .openai
 playwright-report
 test-results
+**/.venv
+**/__pycache__
+**/*.pyc
+
+**/.env
+**/.env.*
+!**/.env.example

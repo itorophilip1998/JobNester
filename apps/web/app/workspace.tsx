@@ -1,4 +1,18 @@
 "use client";
+import { PortfolioDesigner } from "./portfolio-designer";
+import { apiFetch, connectIntegration } from "./api-client";
+import {
+  useAppAuth,
+  LoginControl,
+  LogoutControl,
+  AccountControl,
+} from "./auth-provider";
+import {
+  portfolioDefaults,
+  portfolioSections,
+  productLink,
+  type PortfolioSection,
+} from "@jobnester/core";
 import React, { useState, useEffect, useCallback } from "react";
 import {
   LayoutDashboard,
@@ -405,9 +419,16 @@ function demoAction(s: AppState, action: string, d: any): AppState {
     n.resumes = n.resumes.map((r) =>
       r.id === d.id ? { ...r, ready: true } : r,
     );
+  if (action === "portfolio.contact-settings") n.contactRecipient = d.email;
+  if (action === "portfolio.unpublish") {
+    n.portfolio.published = false;
+    localStorage.removeItem("jobnester-published-demo");
+    localStorage.setItem("jobnester-unpublished-demo", "true");
+  }
   if (action === "portfolio.save") n.portfolio = d;
   if (action === "portfolio.publish") {
     n.portfolio.published = true;
+    localStorage.removeItem("jobnester-unpublished-demo");
     localStorage.setItem(
       "jobnester-published-demo",
       JSON.stringify(n.portfolio),
@@ -442,11 +463,18 @@ function demoAction(s: AppState, action: string, d: any): AppState {
     );
   return n;
 }
-export default function Workspace() {
+export default function Workspace({
+  initialPage = "Overview",
+}: {
+  initialPage?: string;
+}) {
+  const auth = useAppAuth();
   const [s, setS] = useState<AppState>(emptyState());
+  const stateRef = React.useRef(s);
+  stateRef.current = s;
   const [loaded, setLoaded] = useState(false);
   const [authenticated, setAuthenticated] = useState(DEMO);
-  const [page, setPage] = useState("Overview");
+  const [page, setPage] = useState(initialPage);
   const [mode, setMode] = useState("fullstack");
   const [query, setQuery] = useState("");
   const [mobile, setMobile] = useState(false);
@@ -487,8 +515,14 @@ export default function Workspace() {
       setLoaded(true);
       return;
     }
+    if (!auth.ready) return;
+    if (!auth.signedIn) {
+      setAuthenticated(false);
+      setLoaded(true);
+      return;
+    }
     try {
-      const r = await fetch(`${API}/api/state`, { credentials: "include" });
+      const r = await apiFetch(`${API}/api/state`, { credentials: "include" });
       if (r.status === 401) {
         setAuthenticated(false);
         setLoaded(true);
@@ -505,7 +539,7 @@ export default function Workspace() {
     } finally {
       setLoaded(true);
     }
-  }, [notify]);
+  }, [notify, auth.ready, auth.signedIn]);
   useEffect(() => {
     load();
   }, [load]);
@@ -535,9 +569,12 @@ export default function Workspace() {
     setBusy(true);
     try {
       if (DEMO) {
-        setS(demoAction(s, action, data));
+        const next = demoAction(stateRef.current, action, data);
+        stateRef.current = next;
+        localStorage.setItem(storageKey, JSON.stringify(next));
+        setS(next);
       } else {
-        const r = await fetch(`${API}/api/actions/${action}`, {
+        const r = await apiFetch(`${API}/api/actions/${action}`, {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
@@ -753,9 +790,8 @@ export default function Workspace() {
             One private workspace for opportunities, tailored CVs, and every
             step toward your next offer.
           </p>
-          <a className="btn" href={`${API}/api/auth/signin`}>
-            Continue with Google <ArrowRight size={17} />
-          </a>
+          <LoginControl />
+          <AccountControl />
           <small>
             <ShieldCheck size={14} />
             Private access · Owner account only
@@ -1705,8 +1741,8 @@ export default function Workspace() {
                             ? notify(
                                 "Gmail OAuth is available in live mode after configuring Google credentials.",
                               )
-                            : window.location.assign(
-                                `${API}/api/integrations/gmail/connect`,
+                            : void connectIntegration("gmail").catch((e) =>
+                                notify(e.message),
                               )
                         }
                       >
@@ -1892,27 +1928,29 @@ export default function Workspace() {
                       <Eye size={15} />
                       View portfolio
                     </a>
-                    <Button
-                      onClick={() =>
-                        act(
-                          "portfolio.publish",
-                          {},
-                          DEMO
-                            ? "Portfolio preview published in this browser"
-                            : "Portfolio published",
-                        )
-                      }
-                      disabled={busy || !s.portfolio.name}
-                    >
-                      <Globe size={15} />
-                      Publish portfolio
-                    </Button>
                   </>
                 }
               />
               <PortfolioEditor
                 portfolio={s.portfolio}
                 resumes={s.resumes}
+                contactRecipient={s.contactRecipient || ""}
+                deliveryConfigured={s.emailDeliveryConfigured || false}
+                onContactSave={(email) =>
+                  act("portfolio.contact-settings", { email })
+                }
+                onPublish={() =>
+                  act(
+                    "portfolio.publish",
+                    {},
+                    DEMO
+                      ? "Portfolio published in this browser"
+                      : "Portfolio published",
+                  )
+                }
+                onUnpublish={() =>
+                  act("portfolio.unpublish", {}, "Portfolio is now private")
+                }
                 onSave={(p) =>
                   act("portfolio.save", p, "Portfolio draft saved")
                 }
@@ -2519,7 +2557,7 @@ function ProfileForm({
     try {
       const f = new FormData();
       f.append("file", file);
-      const r = await fetch(`${API}/api/resume/import`, {
+      const r = await apiFetch(`${API}/api/resume/import`, {
         method: "POST",
         credentials: "include",
         body: f,
@@ -3070,20 +3108,132 @@ function PortfolioEditor({
   portfolio,
   resumes,
   onSave,
+  onPublish,
+  onUnpublish,
+  contactRecipient,
+  deliveryConfigured,
+  onContactSave,
 }: {
   portfolio: Portfolio;
+  contactRecipient: string;
+  deliveryConfigured: boolean;
+  onContactSave: (email: string) => Promise<boolean>;
+  onPublish: () => Promise<boolean>;
+  onUnpublish: () => Promise<boolean>;
   resumes: Resume[];
-  onSave: (p: Portfolio) => void;
+  onSave: (p: Portfolio) => Promise<boolean>;
 }) {
-  const [p, setP] = useState(structuredClone(portfolio));
+  const [p, setP] = useState(portfolioDefaults(structuredClone(portfolio)));
+  const [recipient, setRecipient] = useState(contactRecipient);
+  const [importStatus, setImportStatus] = useState("");
+  const [extracted, setExtracted] = useState("");
+  const [saving, setSaving] = useState(false);
+  async function save() {
+    setSaving(true);
+    try {
+      if (!(await onContactSave(recipient))) return false;
+      return await onSave(p);
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function importCv(file: File) {
+    setImportStatus("Reading your CV and preparing an editable draft…");
+    try {
+      if (DEMO) {
+        if (!/\.txt$/i.test(file.name))
+          throw Error(
+            "Use a TXT CV in demo mode. PDF and DOCX import are available in the live app.",
+          );
+        const text = await file.text();
+        const fileUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+        const lines = text
+          .split(/\n/)
+          .map((x) => x.trim())
+          .filter(Boolean);
+        setP((prev) => ({
+          ...prev,
+          name: lines[0] || prev.name,
+          headline: lines[1] || prev.headline,
+          bio: text.slice(0, 1000),
+          resume: { url: fileUrl, name: file.name },
+        }));
+        setExtracted(text);
+      } else {
+        const form = new FormData();
+        form.append("file", file);
+        const response = await apiFetch(`${API}/api/portfolio/from-cv`, {
+          method: "POST",
+          body: form,
+        });
+        const result = await response.json();
+        if (!response.ok)
+          throw Error(result.message || "Could not import this CV.");
+        const { reviewRequired, extractedText, ...fields } = result;
+        setExtracted(extractedText);
+        setP((prev) => ({ ...prev, ...fields }));
+      }
+      setImportStatus(
+        "Draft created. Review extracted details and complete missing fields before saving. Your public portfolio has not changed.",
+      );
+    } catch (error) {
+      setImportStatus((error as Error).message);
+    }
+  }
+
   return (
     <form
       className="form-stack"
       onSubmit={(e) => {
         e.preventDefault();
-        onSave(p);
+        void save();
       }}
     >
+      <section className="panel settings-section cv-portfolio-start">
+        <div className="panel-header">
+          <div>
+            <h2>Start with your CV</h2>
+            <p>
+              Generate one editable portfolio draft from your existing
+              experience.
+            </p>
+          </div>
+          <FileText size={22} />
+        </div>
+        <label className="upload-zone">
+          <Upload size={23} />
+          <div>
+            <strong>Upload CV & create portfolio</strong>
+            <p>PDF, DOCX, or TXT · up to 5 MB · always starts as a draft</p>
+          </div>
+          <input
+            type="file"
+            accept=".pdf,.docx,.txt"
+            aria-label="Create portfolio from CV"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void importCv(file);
+            }}
+          />
+        </label>
+        {importStatus && (
+          <p className="fine-print" role="status">
+            {importStatus}
+          </p>
+        )}
+        {extracted && (
+          <details>
+            <summary>Review extracted CV text</summary>
+            <pre className="cv-extracted">{extracted}</pre>
+          </details>
+        )}
+      </section>
+      <PortfolioDesigner value={p} onChange={setP} />
       <section className="panel settings-section">
         <div className="panel-header">
           <div>
@@ -3102,6 +3252,18 @@ function PortfolioEditor({
               onChange={(e) => setP({ ...p, name: e.target.value })}
             />
           </Field>
+          <Field label="Profile image URL">
+            <input
+              type="url"
+              value={p.avatar || ""}
+              onChange={(e) => setP({ ...p, avatar: e.target.value })}
+            />
+          </Field>
+          <MediaUpload
+            label="Upload profile image"
+            accept="image/png,image/jpeg,image/webp"
+            onUploaded={(url) => setP((prev) => ({ ...prev, avatar: url }))}
+          />
           <Field label="Headline">
             <input
               required
@@ -3218,16 +3380,20 @@ function PortfolioEditor({
               </button>
             </div>
             <div className="form-grid">
-              {(["title", "url", "image", "video"] as const).map((k) => (
+              {(
+                ["title", "url", "repositoryUrl", "image", "video"] as const
+              ).map((k) => (
                 <Field
                   label={
                     k === "title"
                       ? "Project name"
                       : k === "url"
-                        ? "Live site / repository URL"
-                        : k === "image"
-                          ? "Screenshot URL"
-                          : "Video URL (MP4)"
+                        ? "Live product URL"
+                        : k === "repositoryUrl"
+                          ? "GitHub / repository URL (fallback)"
+                          : k === "image"
+                            ? "Screenshot URL"
+                            : "Video URL (MP4)"
                   }
                   key={k}
                 >
@@ -3391,12 +3557,243 @@ function PortfolioEditor({
           </div>
         ))}
       </section>
+      <section className="panel settings-section">
+        <div className="panel-header">
+          <div>
+            <h2>Your résumé</h2>
+            <p>Include the CV that employers should download.</p>
+          </div>
+          <Download size={20} />
+        </div>
+        <Field label="Résumé URL">
+          <input
+            type="url"
+            value={p.resume?.url || ""}
+            onChange={(e) =>
+              setP({
+                ...p,
+                resume: {
+                  url: e.target.value,
+                  name: p.resume?.name || "Résumé",
+                },
+              })
+            }
+          />
+        </Field>
+        <MediaUpload
+          label="Upload résumé"
+          accept=".pdf,.docx,.txt"
+          onUploaded={(url) =>
+            setP((prev) => ({
+              ...prev,
+              resume: { url, name: "Professional résumé" },
+            }))
+          }
+        />
+        {p.resume?.url && (
+          <p className="fine-print">
+            Your résumé will be public only after publication. Remove the URL to
+            hide it.
+          </p>
+        )}
+      </section>
+      <section className="panel settings-section">
+        <div className="panel-header">
+          <div>
+            <h2>Certifications</h2>
+            <p>Credentials, certificates, and professional learning.</p>
+          </div>
+          <Button
+            secondary
+            small
+            onClick={() =>
+              setP({
+                ...p,
+                certifications: [
+                  ...(p.certifications || []),
+                  {
+                    id: crypto.randomUUID(),
+                    name: "",
+                    issuer: "",
+                    issuedAt: "",
+                    credentialUrl: "",
+                    image: "",
+                    description: "",
+                  },
+                ],
+              })
+            }
+          >
+            <Plus size={14} />
+            Add certification
+          </Button>
+        </div>
+        {(p.certifications || []).map((cert) => (
+          <div className="evidence-card" key={cert.id}>
+            <div className="evidence-top">
+              <span>CERTIFICATION</span>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="Remove certification"
+                onClick={() =>
+                  setP({
+                    ...p,
+                    certifications: p.certifications?.filter(
+                      (x) => x.id !== cert.id,
+                    ),
+                  })
+                }
+              >
+                <Trash2 size={15} />
+              </button>
+            </div>
+            <div className="form-grid">
+              {(
+                [
+                  "name",
+                  "issuer",
+                  "issuedAt",
+                  "credentialUrl",
+                  "image",
+                ] as const
+              ).map((key) => (
+                <Field
+                  key={key}
+                  label={
+                    {
+                      name: "Certification name",
+                      issuer: "Issued by",
+                      issuedAt: "Date awarded",
+                      credentialUrl: "Credential URL",
+                      image: "Certificate image / PDF URL",
+                    }[key]
+                  }
+                >
+                  <input
+                    required={key === "name"}
+                    type={
+                      key === "credentialUrl" || key === "image"
+                        ? "url"
+                        : "text"
+                    }
+                    value={cert[key]}
+                    onChange={(e) =>
+                      setP({
+                        ...p,
+                        certifications: p.certifications?.map((x) =>
+                          x.id === cert.id
+                            ? { ...x, [key]: e.target.value }
+                            : x,
+                        ),
+                      })
+                    }
+                  />
+                </Field>
+              ))}
+            </div>
+            <Field label="Description">
+              <textarea
+                rows={2}
+                value={cert.description}
+                onChange={(e) =>
+                  setP({
+                    ...p,
+                    certifications: p.certifications?.map((x) =>
+                      x.id === cert.id
+                        ? { ...x, description: e.target.value }
+                        : x,
+                    ),
+                  })
+                }
+              />
+            </Field>
+            <MediaUpload
+              label="Upload certificate"
+              accept="image/png,image/jpeg,image/webp,application/pdf"
+              onUploaded={(url, mime) =>
+                setP((prev) => ({
+                  ...prev,
+                  certifications: prev.certifications?.map((x) =>
+                    x.id === cert.id
+                      ? {
+                          ...x,
+                          image: url,
+                          documentType:
+                            mime === "application/pdf" ? "pdf" : "image",
+                        }
+                      : x,
+                  ),
+                }))
+              }
+            />
+          </div>
+        ))}
+      </section>
+      <section className="panel settings-section">
+        <div className="panel-header">
+          <div>
+            <h2>Contact delivery</h2>
+            <p>Receive the complete inquiry directly in your personal inbox.</p>
+          </div>
+          <Mail size={20} />
+        </div>
+        <Field
+          label="Personal email — private destination"
+          hint="This destination is not exposed on the public portfolio."
+        >
+          <input
+            type="email"
+            value={recipient}
+            onChange={(e) => setRecipient(e.target.value)}
+            placeholder="you@example.com"
+          />
+        </Field>
+        <p className="fine-print">
+          {deliveryConfigured
+            ? "Email delivery is configured. Visitors can send inquiries through your public contact form."
+            : "Configure SMTP or Resend and a verified sender in Settings/environment to activate email delivery. In demo mode no email is sent."}
+        </p>
+      </section>
       <div className="save-bar">
-        <span>Save your draft, then publish when you’re ready.</span>
-        <Button type="submit">
-          <Check size={15} />
-          Save portfolio draft
-        </Button>
+        <span>
+          {portfolio.published
+            ? "Your published version stays live while you edit this draft."
+            : "Your portfolio is private until you publish."}
+        </span>
+        <div className="portfolio-save-actions">
+          <Button type="submit" disabled={saving}>
+            <Check size={15} />
+            Save portfolio draft
+          </Button>
+          <Button
+            secondary
+            disabled={saving}
+            onClick={async () => {
+              const tab = window.open("about:blank", "_blank");
+              if (await save()) {
+                if (tab) tab.location.href = "/portfolio/preview";
+              } else tab?.close();
+            }}
+          >
+            <Eye size={15} />
+            Preview draft
+          </Button>
+          <Button
+            disabled={saving}
+            onClick={async () => {
+              if (await save()) await onPublish();
+            }}
+          >
+            <Globe size={15} />
+            Publish portfolio
+          </Button>
+          {portfolio.published && (
+            <Button secondary onClick={onUnpublish}>
+              Unpublish
+            </Button>
+          )}
+        </div>
       </div>
     </form>
   );
@@ -3703,8 +4100,8 @@ function SettingsPanel({
                     else if (connected)
                       act("gmail.disconnect", {}, "Gmail disconnected");
                     else
-                      window.location.assign(
-                        `${API}/api/integrations/gmail/connect`,
+                      void connectIntegration("gmail").catch((e) =>
+                        notify(e.message),
                       );
                   }}
                 >
@@ -3722,8 +4119,8 @@ function SettingsPanel({
                       else if (connected)
                         act("linkedin.disconnect", {}, "LinkedIn disconnected");
                       else
-                        window.location.assign(
-                          `${API}/api/integrations/linkedin/connect`,
+                        void connectIntegration("linkedin").catch((e) =>
+                          notify(e.message),
                         );
                     }}
                   >
@@ -3784,12 +4181,7 @@ function SettingsPanel({
             </span>
           </div>
         </section>
-        {!DEMO && (
-          <a className="btn secondary" href={`${API}/api/auth/signout`}>
-            <LogOut size={15} />
-            Sign out
-          </a>
-        )}
+        {!DEMO && <LogoutControl />}
       </div>
     </div>
   );
@@ -3853,7 +4245,7 @@ function InterviewPanel({
               });
             } else {
               try {
-                const r = await fetch(`${API}/api/interview/${j.id}`, {
+                const r = await apiFetch(`${API}/api/interview/${j.id}`, {
                   credentials: "include",
                 });
                 if (!r.ok) throw Error("Could not prepare questions");
@@ -3904,324 +4296,7 @@ function InterviewPanel({
     </>
   );
 }
-export function PublicPortfolio() {
-  const [p, setP] = useState<Portfolio | null>(null);
-  const [ready, setReady] = useState(false);
-  const [message, setMessage] = useState("");
-  const [project, setProject] = useState<Portfolio["projects"][number] | null>(
-    null,
-  );
-  useEffect(() => {
-    if (DEMO) {
-      try {
-        const stored = localStorage.getItem("jobnester-published-demo");
-        setP(stored ? JSON.parse(stored) : demoState().portfolio);
-      } catch {
-        setP(demoState().portfolio);
-      }
-      setReady(true);
-    } else
-      fetch(`${API}/api/public/portfolio`)
-        .then((r) => (r.ok ? r.json() : null))
-        .then(setP)
-        .catch(() => setP(null))
-        .finally(() => setReady(true));
-  }, []);
-  if (!ready) return <div className="loading">Loading portfolio…</div>;
-  if (!p)
-    return (
-      <div className="loading">
-        <Globe />
-        <h1>Portfolio coming soon.</h1>
-        <p>This portfolio has not been published yet.</p>
-      </div>
-    );
-  return (
-    <div className="portfolio-page">
-      {DEMO && (
-        <div className="portfolio-demo">
-          Portfolio demo · replace sample content before sharing professionally{" "}
-          <a href="/">
-            Back to workspace <ArrowUpRight size={12} />
-          </a>
-        </div>
-      )}
-      <header className="portfolio-nav">
-        <a className="portfolio-brand" href="#">
-          {p.name || "Your name"}
-          <span>®</span>
-        </a>
-        <nav>
-          <a href="#work">Selected work</a>
-          <a href="#about">About</a>
-          <a href="#contact">
-            Let&apos;s talk <ArrowUpRight size={13} />
-          </a>
-        </nav>
-      </header>
-      <main>
-        <section className="portfolio-hero">
-          <div>
-            <div className="eyebrow">
-              <span className="status-dot" />
-              {p.location || "OPEN TO NEW OPPORTUNITIES"}
-            </div>
-            <h1>
-              Thoughtful software.
-              <br />
-              <span>Meaningful impact.</span>
-            </h1>
-            <p>{p.headline}</p>
-            <div className="portfolio-intro">{p.bio}</div>
-            <div className="portfolio-hero-actions">
-              <a href="#work" className="btn">
-                Explore my work <ArrowDownIcon />
-              </a>
-              <a className="text-button" href="#contact">
-                Let&apos;s build something <ArrowUpRight size={16} />
-              </a>
-            </div>
-          </div>
-          <div className="portfolio-art">
-            <div className="art-grid" />
-            <span className="art-orbit a" />
-            <span className="art-orbit b" />
-            <span className="art-orbit c" />
-            <div className="art-core">
-              <Code2 size={54} />
-            </div>
-            <span className="art-chip chip-a">
-              <Cloud size={16} />
-              Cloud architecture
-            </span>
-            <span className="art-chip chip-b">
-              <Sparkles size={16} />
-              Practical AI
-            </span>
-            <span className="art-chip chip-c">
-              <Layers size={16} />
-              Full-stack engineering
-            </span>
-            <span className="art-label">ENGINEERED WITH INTENTION</span>
-          </div>
-        </section>
-        <section className="portfolio-skills">
-          {p.skills.slice(0, 9).map((s) => (
-            <span key={s}>
-              {s}
-              <span>✦</span>
-            </span>
-          ))}
-        </section>
-        <section id="work" className="portfolio-section">
-          <div className="section-label">01 / SELECTED WORK</div>
-          <h2>Ideas brought to life.</h2>
-          <p className="portfolio-section-copy">
-            A closer look at the systems, products, and decisions behind my
-            work.
-          </p>
-          <div className="portfolio-projects">
-            {p.projects.map((x, i) => (
-              <button
-                key={x.id}
-                className="portfolio-project"
-                onClick={() => setProject(x)}
-              >
-                <div className={`project-visual visual-${i % 3}`}>
-                  {x.image ? (
-                    <img src={x.image} alt={x.title} />
-                  ) : (
-                    <>
-                      <span className="project-no">0{i + 1}</span>
-                      <div className="project-art">
-                        <span />
-                        <span />
-                        <span />
-                        <span />
-                      </div>
-                      <span className="project-visual-label">
-                        {x.tags[0] || "ENGINEERING"}
-                      </span>
-                    </>
-                  )}
-                </div>
-                <div className="project-caption">
-                  <h3>{x.title}</h3>
-                  <ArrowUpRight size={20} />
-                </div>
-                <p>
-                  {x.description.slice(0, 130)}
-                  {x.description.length > 130 ? "…" : ""}
-                </p>
-                <div className="job-tags">
-                  {x.tags.map((t) => (
-                    <span key={t}>{t}</span>
-                  ))}
-                </div>
-              </button>
-            ))}
-          </div>
-        </section>
-        <section id="about" className="portfolio-section about-section">
-          <div>
-            <div className="section-label">02 / THE WAY I WORK</div>
-            <h2>
-              From the big picture
-              <br />
-              to the last detail.
-            </h2>
-            <p>{p.bio}</p>
-            {p.github && (
-              <a
-                href={p.github}
-                target="_blank"
-                rel="noreferrer"
-                className="text-button"
-              >
-                Find me on GitHub <ArrowUpRight size={15} />
-              </a>
-            )}
-            {p.publicResumeId && !DEMO && (
-              <a
-                className="btn secondary"
-                href={`${API}/api/public/resume`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                <Download size={15} />
-                Download CV
-              </a>
-            )}
-          </div>
-          <div className="portfolio-experience">
-            {p.experience.map((e) => (
-              <article key={e.id}>
-                <span>
-                  {e.start} — {e.end}
-                </span>
-                <h3>{e.role}</h3>
-                <h4>{e.company}</h4>
-                <p>{e.text}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-        <section id="contact" className="portfolio-section portfolio-contact">
-          <div>
-            <div className="section-label">03 / WHAT’S NEXT</div>
-            <h2>
-              Have something
-              <br />
-              <span>in mind?</span>
-            </h2>
-            <p>
-              I&apos;d love to hear about your team, your challenge, or what
-              you&apos;re building.
-            </p>
-            {p.email && (
-              <a href={`mailto:${p.email}`}>
-                {p.email} <ArrowUpRight size={16} />
-              </a>
-            )}
-          </div>
-          <form
-            className="form-stack"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              const f = e.currentTarget;
-              const data = Object.fromEntries(new FormData(f));
-              if (DEMO) {
-                setMessage(
-                  "Demo only — no message was sent. Connect the live API to receive inquiries.",
-                );
-                return;
-              }
-              try {
-                const r = await fetch(`${API}/api/public/contact`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify(data),
-                });
-                if (!r.ok)
-                  throw Error(
-                    "Could not send your message. Please try again later.",
-                  );
-                setMessage("Thank you. Your message has been received.");
-                f.reset();
-              } catch (err) {
-                setMessage((err as Error).message);
-              }
-            }}
-          >
-            <div className="form-grid">
-              <Field label="Your name">
-                <input name="name" required maxLength={120} />
-              </Field>
-              <Field label="Email address">
-                <input name="email" type="email" required maxLength={200} />
-              </Field>
-            </div>
-            <Field label="What would you like to talk about?">
-              <textarea
-                name="message"
-                rows={5}
-                required
-                minLength={10}
-                maxLength={5000}
-              />
-            </Field>
-            <input
-              name="website"
-              tabIndex={-1}
-              autoComplete="off"
-              className="honeypot"
-              aria-hidden="true"
-            />
-            <Button type="submit">
-              Send message <ArrowUpRight size={16} />
-            </Button>
-            {message && <p role="status">{message}</p>}
-          </form>
-        </section>
-      </main>
-      <footer className="portfolio-footer">
-        <span>
-          © {new Date().getFullYear()} {p.name}
-        </span>
-        <span>Thoughtfully built. Always evolving.</span>
-        <a href="#">Back to top ↑</a>
-      </footer>
-      {project && (
-        <Modal
-          wide
-          title={project.title}
-          description={project.tags.join(" · ")}
-          onClose={() => setProject(null)}
-        >
-          <p className="case-study">{project.description}</p>
-          {project.video && (
-            <video
-              className="project-video"
-              src={project.video}
-              controls
-              preload="metadata"
-            />
-          )}
-          {project.url && (
-            <a
-              className="btn"
-              href={project.url}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Explore project <ArrowUpRight size={15} />
-            </a>
-          )}
-        </Modal>
-      )}
-    </div>
-  );
-}
+export { PublicPortfolio } from "./portfolio-view";
 
 function MediaUpload({
   label,
@@ -4230,7 +4305,7 @@ function MediaUpload({
 }: {
   label: string;
   accept: string;
-  onUploaded: (url: string) => void;
+  onUploaded: (url: string, mime?: string) => void;
 }) {
   const [status, setStatus] = useState("");
   return (
@@ -4258,14 +4333,14 @@ function MediaUpload({
             try {
               const f = new FormData();
               f.append("file", file);
-              const r = await fetch(`${API}/api/assets/upload`, {
+              const r = await apiFetch(`${API}/api/assets/upload`, {
                 method: "POST",
                 credentials: "include",
                 body: f,
               });
               const body = await r.json();
               if (!r.ok) throw Error(body.message || "Upload failed");
-              onUploaded(body.url);
+              onUploaded(body.url, body.mime);
               setStatus(
                 "Uploaded. Save the draft, then publish to make this media public.",
               );

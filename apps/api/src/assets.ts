@@ -1,3 +1,7 @@
+import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { inspectDocx } from "./documents.js";
+import { publicAssetReferences } from "@jobnester/core";
 import {
   S3Client,
   PutObjectCommand,
@@ -41,21 +45,39 @@ export async function uploadAsset(file: Express.Multer.File) {
         ? "image/webp"
         : b.subarray(4, 8).toString() === "ftyp"
           ? "video/mp4"
-          : null;
+          : b.subarray(0, 5).toString() === "%PDF-"
+            ? "application/pdf"
+            : /\.docx$/i.test(file.originalname)
+              ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              : /\.txt$/i.test(file.originalname)
+                ? "text/plain"
+                : null;
   if (!mime)
     throw new BadRequestException("Unsupported or invalid media format.");
-  const s3 = storage(),
-    id = randomUUID(),
-    key = `portfolio/${id}`;
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: process.env.S3_BUCKET,
-      Key: key,
-      Body: b,
-      ContentType: mime,
-      ContentDisposition: "inline",
-    }),
-  );
+  if (
+    mime ===
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  )
+    inspectDocx(b);
+  const id = randomUUID();
+  const local = process.env.ASSET_STORAGE !== "s3";
+  const key = local ? `local/${id}` : `portfolio/${id}`;
+  if (local) {
+    const dir = process.env.UPLOAD_DIRECTORY || "/tmp/jobnester-uploads";
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, id), b, { mode: 0o600 });
+  } else {
+    const s3 = storage();
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: process.env.S3_BUCKET,
+        Key: key,
+        Body: b,
+        ContentType: mime,
+        ContentDisposition: "inline",
+      }),
+    );
+  }
   await db.asset.create({
     data: { id, key, mime, originalName: file.originalname.slice(0, 200) },
   });
@@ -66,7 +88,7 @@ export async function assetUrl(id: string, publicOnly: boolean) {
     const owner = await db.owner.findUnique({ where: { id: "owner" } });
     const p = owner?.portfolioPublished as unknown as Portfolio | null;
     const url = `${apiOrigin}/api/public/assets/${id}`;
-    if (!p?.projects.some((x) => x.image === url || x.video === url))
+    if (!p || !publicAssetReferences(p).includes(url))
       throw new NotFoundException("This media is not published.");
   }
   const a = await db.asset.findUnique({ where: { id } });
@@ -80,4 +102,27 @@ export async function assetUrl(id: string, publicOnly: boolean) {
     }),
     { expiresIn: 60 },
   );
+}
+
+export async function localAsset(id: string) {
+  const a = await db.asset.findUnique({ where: { id } });
+  if (!a) throw new NotFoundException();
+  if (!a.key.startsWith("local/")) return null;
+  const filename = a.key.slice(6);
+  if (!/^[a-f0-9-]{36}$/.test(filename)) throw new NotFoundException();
+  return {
+    asset: a,
+    buffer: await readFile(
+      join(process.env.UPLOAD_DIRECTORY || "/tmp/jobnester-uploads", filename),
+    ),
+  };
+}
+export async function publishedAsset(id: string) {
+  const owner = await db.owner.findUnique({ where: { id: "owner" } });
+  const p = owner?.portfolioPublished as unknown as Portfolio | null;
+  if (
+    !p ||
+    !publicAssetReferences(p).includes(`${apiOrigin}/api/public/assets/${id}`)
+  )
+    throw new NotFoundException("This file is not published.");
 }
