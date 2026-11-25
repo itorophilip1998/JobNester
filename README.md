@@ -2,20 +2,28 @@
 
 A personal career workspace and public portfolio built with Next.js, NestJS, Python/FastAPI, PostgreSQL/Prisma, and BullMQ/Redis. The web app includes a clearly labeled browser-local demo; the live app uses an owner-authenticated API and durable database.
 
-## Start all services
+## Start all services (Docker-first)
 
-From this directory **or its parent project folder**:
+JobNester runs as a full Docker Compose stack. From the project root:
+
+```sh
+./start.sh
+```
+
+Same thing via npm:
 
 ```sh
 npm start
+# or
+npm run docker:up
 ```
 
-Requires Node.js 22 and Docker with Compose v2. Host Python and npm packages are unnecessary for Docker startup. The dependency-free centralized launcher:
+Requires Node.js 22 (launcher only) and Docker with Compose v2. Host Python and app `npm install` are not required for Docker startup. The launcher:
 
-1. Checks Docker/Compose, starts Docker Desktop if needed on macOS/Windows, and waits for the engine. On Linux it attempts systemd startup without elevation and reports how to start the daemon if permission is required.
-2. Initializes `.env` from `.env.example` if needed, fills missing local session/encryption/service secrets, preserves existing values, and restricts file permissions. It never prints secrets.
-3. Builds and starts PostgreSQL, Redis, the Python AI service, NestJS API, BullMQ worker, and the Next.js server with Docker Compose.
-4. Applies Prisma migrations and seeds the empty owner profile before the API starts. It waits for service health checks before reporting success.
+1. Checks Docker/Compose, starts Docker Desktop if needed on macOS/Windows, and waits for the engine.
+2. Initializes `.env` from `.env.example` if needed, fills missing local secrets, preserves existing values (including `GEMINI_API_KEY`), and never prints secrets.
+3. Builds and starts PostgreSQL, Redis, Python AI (Gemini), NestJS API, BullMQ worker, and Next.js with Compose.
+4. Applies Prisma migrations and seeds the owner profile before the API becomes healthy.
 
 | Service            | Address                          |
 | ------------------ | -------------------------------- |
@@ -26,15 +34,20 @@ Requires Node.js 22 and Docker with Compose v2. Host Python and npm packages are
 | Redis              | localhost:6380                   |
 
 ```sh
-npm stop                  # Stop containers; preserve volumes
-npm run restart           # Stop, rebuild, and start all services
-npm run status            # Container health/status
-npm run logs -- api       # Follow one service (web/api/ai/worker/db/redis)
-npm run logs              # Follow all logs
-npm run setup             # Initialize local configuration without Docker startup
+./stop.sh                     # Stop containers; preserve volumes
+./start.sh restart            # Rebuild and start all services
+./start.sh status             # Container health/status
+./start.sh logs api           # Follow one service (web/api/ai/worker/db/redis)
+./start.sh logs               # Follow all logs
+./start.sh setup              # Initialize .env without starting Docker
+
+npm stop                      # same as ./stop.sh
+npm run docker:restart
+npm run docker:status
+npm run logs -- api
 ```
 
-Set OWNER_EMAIL to your verified Clerk email (or configure CLERK_OWNER_USER_ID), plus NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY in `.env` before signing in. The local launcher can reuse the development keys created by Clerk CLI in apps/web/.env.local. Services run without them, but private dashboard access remains locked. The launcher does not fabricate credentials or enable a development authentication bypass. OPENAI_API_KEY is optional; only the Python container receives it. The worker calls Python over authenticated HTTP and owns task retries, database persistence, and AI budget reservations.
+Set OWNER_EMAIL to your verified Clerk email (or configure CLERK_OWNER_USER_ID), plus NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY in `.env` before signing in. The local launcher can reuse the development keys created by Clerk CLI in apps/web/.env.local. Services run without them, but private dashboard access remains locked. The launcher does not fabricate credentials or enable a development authentication bypass. GEMINI_API_KEY is optional; only the Python container receives it. The worker calls Python over authenticated HTTP and owns task retries, database persistence, and AI budget reservations.
 
 The web runs the actual Next.js Node server (`next start`), the API is a separate NestJS process, and AI generation/interview preparation run in Python/FastAPI. The Node worker performs collection, scheduling, and orchestration; it no longer calls OpenAI or composes live CVs itself.
 
@@ -57,9 +70,9 @@ Clerk manages login at `/sign-in`, with protected editing at `/portfolio/edit` a
 
 For the optional Gmail integration, create a Google OAuth Web application. Add these exact development callback URLs:
 
-- `http://localhost:4000/api/integrations/gmail/callback` — optional Gmail read-only connection
+- `http://localhost:4000/api/integrations/gmail/callback` — Gmail read + send connection
 
-Enable Gmail API, configure the OAuth consent screen, and add your account as a test user while developing. Gmail read-only is a restricted scope; production verification requirements depend on your deployment and Google's policy. Google OAuth testing grants can expire, so reconnect when required. Owner login uses Clerk. Google OAuth is used only for Gmail access. Configure MFA in your Clerk application if desired.
+Enable Gmail API, configure the OAuth consent screen, and add your account as a test user while developing. Gmail scopes include read (inbox sync) and send (application emails with résumé/cover letter attachments). Production verification requirements depend on your deployment and Google's policy. Google OAuth testing grants can expire, so reconnect when required. Owner login uses Clerk. Google OAuth is used only for Gmail access. Configure MFA in your Clerk application if desired.
 
 Optional LinkedIn basic identity connection requires an approved **Sign In with LinkedIn using OpenID Connect** product and the callback `http://localhost:4000/api/integrations/linkedin/callback`. Configure LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET. It imports only the name and verified email when explicitly requested; it cannot read full work history, saved jobs, messages, or applications. Indeed uses manual job links and pasted descriptions. No restricted scraping or auto-submission is implemented.
 
@@ -75,9 +88,9 @@ Optional LinkedIn basic identity connection requires an approved **Sign In with 
 
 ### AI behavior
 
-OPENAI_API_KEY is optional. Without it, CV generation ranks verified evidence using deterministic rules. With it, the initial OpenAI adapter selects evidence IDs for relevance; it cannot introduce new claims. Documents retain reviewed source facts verbatim. Cover letters assemble those same facts. Match scores use configurable skills/title/evidence weights and are not hiring probabilities. Unknown eligibility stays unresolved; country exclusions and explicit US authorization requirements override fit.
+GEMINI_API_KEY is optional. Without it, CV generation and application emails use deterministic ranking/templates. With it, Gemini selects evidence IDs, structures portfolio drafts from CVs, and composes application emails; it cannot invent professional claims. Documents retain reviewed source facts. Match scores use configurable skills/title/evidence weights and are not hiring probabilities.
 
-AI spending uses a conservative reservation ledger with database locking, not provider billing reconciliation. The default model is gpt-4o-mini; only this model is enabled for external calls. Other model values use deterministic generation until their adapter and pricing reservation are reviewed. Each request reserves $0.10 against the monthly ceiling. When the ceiling is exhausted, generation falls back to deterministic ranking. For an absolute account-wide ceiling, also configure limits with your AI provider.
+AI spending uses a conservative reservation ledger with database locking. The default model is `gemini-2.0-flash` (other allowlisted Gemini models are supported). Each request reserves $0.10 against the monthly ceiling. When the ceiling is exhausted, generation falls back to deterministic ranking.
 
 ### Portfolio media and contact email
 

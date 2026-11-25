@@ -167,6 +167,15 @@ export function normalizePosting(
       : /part.?time/i.test(commitment)
         ? "Part-time"
         : "Not specified";
+  // Only keep an address when the posting itself publishes one — never invent.
+  const publishedEmails = Array.from(
+    new Set(
+      `${desc}\n${raw.meta?.email || raw.contactEmail || ""}`.match(
+        /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,
+      ) || [],
+    ),
+  ).filter((email) => !/example\.(com|org)|noreply|no-reply/i.test(email));
+  const contactEmail = publishedEmails[0]?.toLowerCase() || null;
   return {
     id: "",
     company: source.company,
@@ -180,6 +189,7 @@ export function normalizePosting(
     technologies,
     description: desc.slice(0, 50000),
     url: canonicalUrl(url),
+    contactEmail,
     source: source.provider,
     sourceId: String(raw.id || raw.jobId || url),
     postedAt: date,

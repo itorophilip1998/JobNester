@@ -29,7 +29,6 @@ import {
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import PDFDocument from "pdfkit";
 import { Document, Packer, Paragraph, TextRun } from "docx";
 
 import { z } from "zod";
@@ -37,31 +36,12 @@ import { AppService, db, json } from "./service.js";
 import { apiOrigin, webOrigin, required, ownerEmail } from "./config.js";
 import { isOwner } from "./auth.js";
 import { seal } from "./security.js";
+import { renderPdf } from "./pdf-render.js";
 
 import { uploadAsset, assetUrl, localAsset, publishedAsset } from "./assets.js";
 import { connectLinkedIn, callbackLinkedIn } from "./linkedin.js";
 import type { Portfolio, Profile, Job } from "@jobnester/core";
-function pdfBuffer(text: string): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({
-      size: "A4",
-      margins: { top: 48, bottom: 48, left: 48, right: 48 },
-      info: { Title: "Professional resume", Author: "JobNester" },
-    });
-    const chunks: Buffer[] = [];
-    doc.on("data", (b) => chunks.push(b));
-    doc.on("end", () => resolve(Buffer.concat(chunks)));
-    doc.on("error", reject);
-    text.split("\n").forEach((line, i) => {
-      if (i === 0) doc.font("Helvetica-Bold").fontSize(21);
-      else if (["SKILLS", "EXPERIENCE"].includes(line))
-        doc.moveDown(0.4).font("Helvetica-Bold").fontSize(11);
-      else doc.font("Helvetica").fontSize(10);
-      doc.text(line || " ", { lineGap: 4 });
-    });
-    doc.end();
-  });
-}
+const pdfBuffer = (text: string) => renderPdf("Professional document", text);
 async function documentResponse(
   res: Response,
   text: string,
@@ -200,7 +180,7 @@ class AppController {
     const text = await extractCv(file);
     const generated = await aiRequest(
       "/v1/portfolio/from-cv",
-      { text },
+      { text, useAi: true },
       z.object({
         name: z.string(),
         headline: z.string(),
@@ -213,6 +193,7 @@ class AppController {
         projects: z.array(z.any()),
         reviewRequired: z.boolean(),
         extractedText: z.string(),
+        method: z.string().optional(),
       }),
     );
     const upload = await uploadAsset(file);
@@ -327,7 +308,8 @@ class AppController {
       client_id: required("GOOGLE_CLIENT_ID"),
       redirect_uri: `${apiOrigin}/api/integrations/gmail/callback`,
       response_type: "code",
-      scope: "openid email https://www.googleapis.com/auth/gmail.readonly",
+      scope:
+        "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send",
       access_type: "offline",
       prompt: "consent",
       state,

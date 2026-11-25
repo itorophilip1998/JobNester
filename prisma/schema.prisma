@@ -64,6 +64,11 @@ model Application {
  resume Resume? @relation("SubmittedResume",fields:[resumeId],references:[id])
  appliedAt DateTime?
  followUp DateTime?
+ contactEmail String?
+ emailDraft Json?
+ sendStatus String @default("none")
+ sentAt DateTime?
+ composeTaskId String?
  events ApplicationEvent[]
  createdAt DateTime @default(now())
 }

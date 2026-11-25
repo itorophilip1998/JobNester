@@ -89,28 +89,30 @@ import { demoState } from "./demo";
 const API = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
 const DEMO = !API;
 const storageKey = "jobnester-demo-v1";
+const pageRoutes: Record<string, string> = {
+  "Discover Jobs": "/jobs",
+  Applications: "/applications",
+  Settings: "/settings",
+  Portfolio: "/portfolio/edit",
+  Overview: "/",
+};
 const navGroups = [
   {
-    label: "WORKSPACE",
+    label: "MAIN",
     items: [
-      ["Overview", LayoutDashboard],
       ["Discover Jobs", Compass],
       ["Applications", BriefcaseBusiness],
+      ["Portfolio", Globe],
       ["Resume Studio", FileText],
     ],
   },
   {
-    label: "CONNECT & GROW",
+    label: "WORKSPACE",
     items: [
+      ["Overview", LayoutDashboard],
       ["Recruitment Inbox", Mail],
       ["Recruiters", Users],
       ["Interview Prep", GraduationCap],
-    ],
-  },
-  {
-    label: "YOUR PRESENCE",
-    items: [
-      ["Portfolio", Globe],
       ["Analytics", ChartNoAxesCombined],
     ],
   },
@@ -369,6 +371,13 @@ function demoAction(s: AppState, action: string, d: any): AppState {
       throw Error("Review a CV for this job before confirming submission.");
     n.applications[i] = applyTransition(n.applications[i], d.stage, d.resumeId);
     n.applications[i].followUp = d.followUp || null;
+    if (d.contactEmail !== undefined)
+      n.applications[i].contactEmail = d.contactEmail || null;
+    if (d.emailDraft) {
+      n.applications[i].emailDraft = d.emailDraft;
+      if (n.applications[i].sendStatus !== "sent")
+        n.applications[i].sendStatus = "drafted";
+    }
   }
   if (action === "application.reapply") {
     const a = n.applications.find((a) => a.id === d.id);
@@ -453,6 +462,70 @@ function demoAction(s: AppState, action: string, d: any): AppState {
   }
   if (action === "recruiter.delete")
     n.recruiters = n.recruiters.filter((r) => r.id !== d.id);
+  if (action === "application.compose") {
+    const mode = n.modes.find((m) => m.id === d.modeId) || n.modes[0];
+    for (const jobId of d.jobIds as string[]) {
+      const j = n.jobs.find((job) => job.id === jobId);
+      if (!j) continue;
+      let resume = n.resumes.find((r) => r.jobId === jobId && r.ready);
+      if (!resume && mode) {
+        const content = composeResume(n.profile, j, mode);
+        resume = {
+          id: crypto.randomUUID(),
+          jobId,
+          modeId: mode.id,
+          name: `${j.company} — ${mode.short}`,
+          createdAt: now,
+          ready: true,
+          ...content,
+        };
+        n.resumes.unshift(resume);
+      }
+      const draft = {
+        subject: `Application: ${j.title} — ${n.profile.name || "Candidate"}`,
+        body: `Hello ${j.company} hiring team,\n\nI am applying for ${j.title}. Please find my résumé and cover letter attached.\n\nBest regards,\n${n.profile.name || "Candidate"}`,
+        coverLetter: resume?.coverLetter || `Dear Hiring Team,\n\nI am applying for ${j.title} at ${j.company}.\n\nBest regards,\n${n.profile.name || "Candidate"}`,
+      };
+      const existing = n.applications.find((a) => a.jobId === jobId);
+      if (existing) {
+        existing.emailDraft = draft;
+        existing.contactEmail = j.contactEmail || existing.contactEmail || null;
+        existing.sendStatus = "drafted";
+        existing.resumeId = resume?.id || existing.resumeId;
+        existing.events.push({
+          id: crypto.randomUUID(),
+          type: "compose",
+          at: now,
+          note: "Application email drafted (demo)",
+        });
+      } else {
+        n.applications.push({
+          id: crypto.randomUUID(),
+          jobId,
+          stage: "Saved",
+          resumeId: resume?.id || null,
+          appliedAt: null,
+          followUp: null,
+          contactEmail: j.contactEmail || null,
+          emailDraft: draft,
+          sendStatus: "drafted",
+          events: [
+            {
+              id: crypto.randomUUID(),
+              type: "compose",
+              at: now,
+              note: "Application email drafted (demo)",
+            },
+          ],
+        });
+      }
+    }
+  }
+  if (action === "application.send") {
+    throw Error(
+      "Sending via Gmail is available in the live app after connecting Gmail with send permission.",
+    );
+  }
   if (action === "scan")
     throw Error(
       "Live scanning requires the API and worker. Demo jobs are illustrative and are never presented as live results.",
@@ -464,7 +537,7 @@ function demoAction(s: AppState, action: string, d: any): AppState {
   return n;
 }
 export default function Workspace({
-  initialPage = "Overview",
+  initialPage = "Discover Jobs",
 }: {
   initialPage?: string;
 }) {
@@ -597,6 +670,9 @@ export default function Workspace({
     setPage(p);
     setQuery("");
     setMobile(false);
+    const route = pageRoutes[p];
+    if (route && typeof window !== "undefined" && window.location.pathname !== route)
+      window.history.replaceState(null, "", route);
   };
   const activeMode = s.modes.find((m) => m.id === mode) || s.modes[0];
   const matches = (j: Job) =>
@@ -1252,11 +1328,28 @@ export default function Workspace({
                       Import job
                     </Button>
                     <Button
-                      onClick={() => act("scan", {}, "Discovery queued")}
+                      secondary
+                      disabled={busy || !selectedJobs.length}
+                      onClick={() =>
+                        act(
+                          "application.compose",
+                          {
+                            jobIds: selectedJobs.slice(0, 20),
+                            modeId: mode,
+                          },
+                          `Composing emails for ${Math.min(selectedJobs.length, 20)} jobs`,
+                        )
+                      }
+                    >
+                      <Send size={15} />
+                      Generate emails ({Math.min(selectedJobs.length, 20)})
+                    </Button>
+                    <Button
+                      onClick={() => act("scan", {}, "Pulling up to 20 jobs")}
                       disabled={busy}
                     >
                       <ScanLine size={16} />
-                      Run scan
+                      Pull 20 jobs
                     </Button>
                   </>
                 }
@@ -1733,7 +1826,7 @@ export default function Workspace({
                   <Empty
                     icon={Mail}
                     title="A little less inbox archaeology."
-                    description="Connect Gmail to find recruiter replies, interview invitations, and job updates. Start with read-only access."
+                    description="Connect Gmail to sync recruitment replies and send applications with résumé and cover letter attachments."
                     action={
                       <Button
                         onClick={() =>
@@ -2342,13 +2435,29 @@ export default function Workspace({
           onClose={() => setModal(null)}
         >
           <ApplicationForm
-            app={s.applications.find((a) => a.jobId === selected.id)!}
+            app={s.applications.find((a) => a.jobId === selected.id)}
+            job={selected}
+            gmailConnected={!!s.gmailConnected}
             resumes={s.resumes.filter(
               (r) => r.jobId === selected.id && r.ready,
             )}
             onSave={async (d) => {
               if (await act("application.update", d, "Application updated"))
                 setModal(null);
+            }}
+            onCompose={async () => {
+              await act(
+                "application.compose",
+                { jobIds: [selected.id], modeId: mode },
+                "Application email queued",
+              );
+            }}
+            onSend={async (applicationId, resumeId) => {
+              await act(
+                "application.send",
+                { id: applicationId, resumeId },
+                "Sending via Gmail…",
+              );
             }}
             onOpen={() => open(selected)}
             onGenerate={() => setModal("generate")}
@@ -2984,32 +3093,68 @@ function ResumePreview({
 }
 function ApplicationForm({
   app,
+  job,
+  gmailConnected,
   resumes,
   onSave,
+  onCompose,
+  onSend,
   onOpen,
   onGenerate,
   onReapply,
   busy,
 }: {
-  app: Application;
+  app?: Application;
+  job: Job;
+  gmailConnected: boolean;
   resumes: Resume[];
   onSave: (data: any) => void;
+  onCompose: () => void;
+  onSend: (applicationId: string, resumeId?: string) => void;
   onOpen: () => void;
   onGenerate: () => void;
   onReapply: () => void;
   busy: boolean;
 }) {
   const [reapply, setReapply] = useState(false);
-  const [stage, setStage] = useState(app.stage);
-  const [resumeId, setResumeId] = useState(app.resumeId || "");
-  const [followUp, setFollowUp] = useState(app.followUp?.slice(0, 10) || "");
+  const [stage, setStage] = useState(app?.stage || "Saved");
+  const [resumeId, setResumeId] = useState(app?.resumeId || "");
+  const [followUp, setFollowUp] = useState(app?.followUp?.slice(0, 10) || "");
+  const [contactEmail, setContactEmail] = useState(
+    app?.contactEmail || job.contactEmail || "",
+  );
+  const [draft, setDraft] = useState(
+    app?.emailDraft || { subject: "", body: "", coverLetter: "" },
+  );
+  if (!app) {
+    return (
+      <div className="form-stack">
+        <Empty
+          title="Save this role first"
+          description="Save the job to track it, then generate an application email."
+        />
+        <Button secondary onClick={onOpen}>
+          Open job link <ExternalLink size={14} />
+        </Button>
+      </div>
+    );
+  }
+  const canSend = !!(contactEmail && draft.subject && draft.body && draft.coverLetter && resumeId);
   return (
     <>
       <form
         className="form-stack"
         onSubmit={(e) => {
           e.preventDefault();
-          onSave({ id: app.id, stage, resumeId: resumeId || null, followUp });
+          onSave({
+            id: app.id,
+            stage,
+            resumeId: resumeId || null,
+            followUp,
+            contactEmail,
+            emailDraft:
+              draft.subject && draft.body && draft.coverLetter ? draft : undefined,
+          });
         }}
       >
         <div className="form-grid">
@@ -3032,8 +3177,30 @@ function ApplicationForm({
           </Field>
         </div>
         <Field
-          label="CV version submitted"
-          hint="Keep the exact document used for this application."
+          label="Recipient email"
+          hint="Left blank when the posting has no published email. Paste one to send from Gmail, or open the job link."
+        >
+          <input
+            type="email"
+            placeholder="No company email on posting"
+            value={contactEmail}
+            onChange={(e) => setContactEmail(e.target.value)}
+          />
+        </Field>
+        <div className="panel-callout">
+          <Link2 size={16} />
+          <div>
+            <strong>Job link</strong>
+            <p>
+              <a href={job.url} target="_blank" rel="noreferrer">
+                {job.url}
+              </a>
+            </p>
+          </div>
+        </div>
+        <Field
+          label="CV version"
+          hint="Attached as PDF when you send via Gmail."
         >
           <select
             value={resumeId}
@@ -3048,19 +3215,72 @@ function ApplicationForm({
             ))}
           </select>
         </Field>
-        {stage === "Applied" && (
+        <div className="section-heading">
+          <h3>Application email</h3>
+          <Badge tone={app.sendStatus === "sent" ? "green" : "purple"}>
+            {app.sendStatus || "none"}
+          </Badge>
+        </div>
+        <Field label="Subject">
+          <input
+            value={draft.subject}
+            onChange={(e) => setDraft({ ...draft, subject: e.target.value })}
+            placeholder="Generate an email draft to fill this"
+          />
+        </Field>
+        <Field label="Message body">
+          <textarea
+            rows={5}
+            value={draft.body}
+            onChange={(e) => setDraft({ ...draft, body: e.target.value })}
+          />
+        </Field>
+        <Field label="Cover letter (attached as PDF)">
+          <textarea
+            rows={6}
+            value={draft.coverLetter}
+            onChange={(e) =>
+              setDraft({ ...draft, coverLetter: e.target.value })
+            }
+          />
+        </Field>
+        {!contactEmail && (
           <div className="panel-callout">
-            <CheckCircle2 size={16} />
-            Saving confirms you submitted this application on the employer’s
-            website.
+            <TriangleAlert size={16} />
+            No company email on this posting. Use the job link, or paste a
+            recipient email to send from your Gmail.
+          </div>
+        )}
+        {!gmailConnected && (
+          <div className="panel-callout">
+            <Mail size={16} />
+            Connect Gmail in Settings (with send permission) to email
+            applications from the platform.
           </div>
         )}
         <div className="modal-actions">
           <Button type="submit" disabled={busy}>
-            Save changes <Check size={15} />
+            Save draft <Check size={15} />
+          </Button>
+          <Button secondary onClick={onCompose} disabled={busy}>
+            <Sparkles size={14} />
+            Generate email
+          </Button>
+          <Button
+            secondary
+            disabled={
+              busy ||
+              !canSend ||
+              app.sendStatus === "sending" ||
+              app.sendStatus === "sent"
+            }
+            onClick={() => onSend(app.id, resumeId || undefined)}
+          >
+            <Send size={14} />
+            Send via Gmail
           </Button>
           <Button secondary onClick={onOpen}>
-            Open employer page <ExternalLink size={14} />
+            Open job link <ExternalLink size={14} />
           </Button>
           {!resumes.length && (
             <Button secondary onClick={onGenerate}>
@@ -3091,7 +3311,7 @@ function ApplicationForm({
         <h3>Activity timeline</h3>
       </div>
       <div className="timeline">
-        {[...app.events].reverse().map((e) => (
+        {[...(app.events || [])].reverse().map((e) => (
           <div key={e.id}>
             <span />
             <div>

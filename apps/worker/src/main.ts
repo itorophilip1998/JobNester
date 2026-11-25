@@ -4,13 +4,16 @@ import {
   aiRequest,
   aiCapabilities,
   resumeResponse,
+  composeResponse,
 } from "../../api/src/ai-client.js";
 import "../../api/src/config.js";
 import { Worker } from "bullmq";
 import { Prisma, type Source as DbSource } from "@prisma/client";
 import { db, json, queue } from "../../api/src/service.js";
-import { redisConnection, required } from "../../api/src/config.js";
+import { redisConnection, required, ownerEmail } from "../../api/src/config.js";
 import { seal, unseal } from "../../api/src/security.js";
+import { buildApplicationMime, encodeGmailRaw } from "../../api/src/gmail-mime.js";
+import { renderPdf } from "../../api/src/pdf-render.js";
 import {
   collect,
   normalizePosting,
@@ -128,7 +131,7 @@ async function scan(taskId: string) {
             },
           });
         } else {
-          await db.job.create({
+          const createdJob = await db.job.create({
             data: {
               company: posting.company,
               title: posting.title,
@@ -139,6 +142,16 @@ async function scan(taskId: string) {
               sightings: { create: { provider, externalId: posting.sourceId } },
             },
           });
+          if (posting.contactEmail) {
+            await db.application.create({
+              data: {
+                jobId: createdJob.id,
+                stage: "Saved",
+                contactEmail: posting.contactEmail,
+                sendStatus: "none",
+              },
+            });
+          }
           created++;
         }
         collected++;
@@ -189,7 +202,7 @@ async function reserveAi(
       await tx.aiUsage.create({
         data: {
           taskId: `${taskId}:${attempt}`,
-          model: "gpt-4o-mini",
+          model: process.env.GEMINI_MODEL || "gemini-2.0-flash",
           reservedUsd: 0.1,
         },
       });
@@ -197,6 +210,39 @@ async function reserveAi(
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   );
+}
+async function gmailAccessToken() {
+  const integration = await db.integration.findUniqueOrThrow({
+    where: { provider: "gmail" },
+  });
+  let tokens = unseal<any>(integration.encryptedTokens);
+  if (!tokens.expiresAt || tokens.expiresAt < Date.now() + 60000) {
+    const response = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      body: new URLSearchParams({
+        client_id: required("GOOGLE_CLIENT_ID"),
+        client_secret: required("GOOGLE_CLIENT_SECRET"),
+        refresh_token: tokens.refresh_token,
+        grant_type: "refresh_token",
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok)
+      throw Error(
+        "Gmail access expired or was revoked. Reconnect Gmail in Settings.",
+      );
+    const refreshed = (await response.json()) as any;
+    tokens = {
+      ...tokens,
+      ...refreshed,
+      expiresAt: Date.now() + refreshed.expires_in * 1000,
+    };
+    await db.integration.update({
+      where: { provider: "gmail" },
+      data: { encryptedTokens: seal(tokens) },
+    });
+  }
+  return tokens.access_token as string;
 }
 async function resume(taskId: string, data: any, attempt: number) {
   const existing = await db.resume.findUnique({
@@ -240,42 +286,196 @@ async function resume(taskId: string, data: any, attempt: number) {
   });
   return `CV and cover letter created using ${content.method} verified evidence. Review before use.`;
 }
-async function gmail(taskId: string) {
-  const integration = await db.integration.findUniqueOrThrow({
-    where: { provider: "gmail" },
+async function compose(taskId: string, data: any, attempt: number) {
+  const [owner, record] = await Promise.all([
+    db.owner.findUniqueOrThrow({ where: { id: "owner" } }),
+    db.job.findUniqueOrThrow({ where: { id: data.jobId } }),
+  ]);
+  const p = owner.profile as unknown as Profile;
+  const mode = (owner.modes as unknown as CareerMode[]).find(
+    (m) => m.id === data.modeId,
+  );
+  if (!mode) throw Error("Career mode was removed.");
+  if (!p.confirmed) throw Error("Review and confirm your experience first.");
+  await progress(taskId, "Composing application email with Gemini", 25);
+  const job = { ...(record.payload as unknown as Job), id: record.id };
+  let resume = await db.resume.findFirst({
+    where: { jobId: record.id, ready: true },
+    orderBy: { createdAt: "desc" },
   });
-  let tokens = unseal<any>(integration.encryptedTokens);
-  if (!tokens.expiresAt || tokens.expiresAt < Date.now() + 60000) {
-    const response = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      body: new URLSearchParams({
-        client_id: required("GOOGLE_CLIENT_ID"),
-        client_secret: required("GOOGLE_CLIENT_SECRET"),
-        refresh_token: tokens.refresh_token,
-        grant_type: "refresh_token",
-      }),
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!response.ok)
-      throw Error(
-        "Gmail access expired or was revoked. Reconnect Gmail in Settings.",
-      );
-    const refreshed = (await response.json()) as any;
-    tokens = {
-      ...tokens,
-      ...refreshed,
-      expiresAt: Date.now() + refreshed.expires_in * 1000,
-    };
-    await db.integration.update({
-      where: { provider: "gmail" },
-      data: { encryptedTokens: seal(tokens) },
+  if (!resume) {
+    await progress(taskId, "Generating résumé before email compose", 35);
+    const useAiForResume = await reserveAi(
+      `${taskId}:resume`,
+      (owner.settings as unknown as Settings).aiBudget,
+      attempt,
+    );
+    const generated = await aiRequest(
+      "/v1/resumes/generate",
+      { profile: p, job, mode, useAi: useAiForResume },
+      resumeResponse,
+    );
+    resume = await db.resume.create({
+      data: {
+        jobId: record.id,
+        modeId: mode.id,
+        generationTaskId: `${taskId}:resume`,
+        name: `${job.company} — ${mode.short}`,
+        content: generated.content,
+        coverLetter: generated.coverLetter,
+        evidenceIds: json(generated.evidenceIds),
+        ready: true,
+      },
     });
   }
+  const useAi = await reserveAi(
+    `${taskId}:compose`,
+    (owner.settings as unknown as Settings).aiBudget,
+    attempt,
+  );
+  const draft = await aiRequest(
+    "/v1/applications/compose",
+    {
+      profile: p,
+      job,
+      mode,
+      coverLetter: resume?.coverLetter || "",
+      useAi,
+    },
+    composeResponse,
+  );
+  const contactEmail = job.contactEmail || null;
+  await db.application.upsert({
+    where: { jobId: record.id },
+    update: {
+      emailDraft: json({
+        subject: draft.subject,
+        body: draft.body,
+        coverLetter: draft.coverLetter,
+      }),
+      contactEmail: contactEmail || undefined,
+      sendStatus: "drafted",
+      composeTaskId: taskId,
+      resumeId: resume?.id || undefined,
+    },
+    create: {
+      jobId: record.id,
+      stage: "Saved",
+      emailDraft: json({
+        subject: draft.subject,
+        body: draft.body,
+        coverLetter: draft.coverLetter,
+      }),
+      contactEmail,
+      sendStatus: "drafted",
+      composeTaskId: taskId,
+      resumeId: resume?.id || null,
+      events: {
+        create: {
+          type: "compose",
+          note: `Application email drafted via ${draft.method}`,
+        },
+      },
+    },
+  });
+  return `Application email drafted using ${draft.method}${contactEmail ? "" : ". No company email found — keep the job link and paste a recipient if you want to send."}`;
+}
+async function sendApplication(taskId: string, data: any) {
+  const application = await db.application.findUniqueOrThrow({
+    where: { id: data.applicationId },
+    include: { job: true },
+  });
+  const draft = application.emailDraft as {
+    subject?: string;
+    body?: string;
+    coverLetter?: string;
+  } | null;
+  if (!application.contactEmail || !draft?.subject || !draft?.body || !draft?.coverLetter)
+    throw Error("Application email draft or recipient is incomplete.");
+  const resume = await db.resume.findUniqueOrThrow({
+    where: { id: data.resumeId || application.resumeId || "" },
+  });
+  if (!resume.ready) throw Error("Mark the résumé ready before sending.");
+  await progress(taskId, "Rendering PDF attachments", 30);
+  const [resumePdf, letterPdf] = await Promise.all([
+    renderPdf(`${resume.name} résumé`, resume.content),
+    renderPdf(`${resume.name} cover letter`, draft.coverLetter),
+  ]);
+  await progress(taskId, "Sending via Gmail", 70);
+  const accessToken = await gmailAccessToken();
+  const from = ownerEmail || "me";
+  const mime = buildApplicationMime({
+    from,
+    to: application.contactEmail,
+    subject: draft.subject,
+    body: draft.body,
+    attachments: [
+      {
+        filename: "resume.pdf",
+        mimeType: "application/pdf",
+        content: resumePdf,
+      },
+      {
+        filename: "cover-letter.pdf",
+        mimeType: "application/pdf",
+        content: letterPdf,
+      },
+    ],
+  });
+  const response = await fetch(
+    "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ raw: encodeGmailRaw(mime) }),
+      signal: AbortSignal.timeout(30000),
+    },
+  );
+  if (!response.ok) {
+    await db.application.update({
+      where: { id: application.id },
+      data: { sendStatus: "failed" },
+    });
+    throw Error(`Gmail send failed with HTTP ${response.status}. Reconnect Gmail with send permission.`);
+  }
+  await db.application.update({
+    where: { id: application.id },
+    data: {
+      sendStatus: "sent",
+      sentAt: new Date(),
+      stage: "Applied",
+      resumeId: resume.id,
+      appliedAt: application.appliedAt || new Date(),
+      events: {
+        create: {
+          type: "sent",
+          note: `Sent application email to ${application.contactEmail} with résumé and cover letter attached.`,
+        },
+      },
+    },
+  });
+  await db.auditLog.create({
+    data: {
+      action: "application.send",
+      metadata: json({
+        applicationId: application.id,
+        jobId: application.jobId,
+        to: application.contactEmail,
+      }),
+    },
+  });
+  return `Application emailed to ${application.contactEmail}.`;
+}
+async function gmail(taskId: string) {
+  const accessToken = await gmailAccessToken();
   const api = async (path: string) => {
     const r = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/${path}`,
       {
-        headers: { Authorization: `Bearer ${tokens.access_token}` },
+        headers: { Authorization: `Bearer ${accessToken}` },
         signal: AbortSignal.timeout(15000),
       },
     );
@@ -350,6 +550,10 @@ const worker = new Worker(
     if (job.name === "scan") message = await scan(taskId);
     else if (job.name === "resume")
       message = await resume(taskId, job.data, job.attemptsMade);
+    else if (job.name === "compose")
+      message = await compose(taskId, job.data, job.attemptsMade);
+    else if (job.name === "send")
+      message = await sendApplication(taskId, job.data);
     else if (job.name === "gmail") message = await gmail(taskId);
     else if (job.name === "notify")
       message = await deliverInquiry(job.data.inquiryId);
@@ -376,6 +580,14 @@ worker.on("failed", async (job, error) => {
       },
     })
     .catch(() => {});
+  if (final && job.name === "send" && job.data.applicationId) {
+    await db.application
+      .update({
+        where: { id: job.data.applicationId },
+        data: { sendStatus: "failed" },
+      })
+      .catch(() => {});
+  }
 });
 worker.on("error", (error) =>
   console.error("Worker connection:", error.message),

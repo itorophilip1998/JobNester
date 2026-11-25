@@ -7,6 +7,12 @@ export const resumeResponse = z.object({
   evidenceIds: z.array(z.string()).min(1),
   method: z.enum(["ai-selected", "rule-ranked"]),
 });
+export const composeResponse = z.object({
+  subject: z.string().min(1).max(300),
+  body: z.string().min(1).max(20000),
+  coverLetter: z.string().min(1).max(50000),
+  method: z.enum(["ai-composed", "rule-ranked"]),
+});
 export const interviewResponse = z.object({
   questions: z.array(z.string()),
   coding: z.string(),

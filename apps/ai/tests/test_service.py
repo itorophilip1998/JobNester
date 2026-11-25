@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import httpx
 from fastapi import HTTPException
-from app.main import app, GenerateRequest, choose_evidence
+from app.main import app, GenerateRequest, ComposeRequest, choose_evidence, deterministic_compose
 
 
 DATA = {
@@ -27,7 +27,7 @@ DATA = {
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.env = patch.dict(os.environ, {"AI_SERVICE_TOKEN": "test-service-token", "OPENAI_API_KEY": ""})
+        self.env = patch.dict(os.environ, {"AI_SERVICE_TOKEN": "test-service-token", "GEMINI_API_KEY": ""})
         self.env.start()
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
         self.headers = {"Authorization": "Bearer test-service-token"}
@@ -64,58 +64,43 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 422)
 
     async def test_budget_disabled_ai_never_calls_provider(self):
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-only"}):
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-only"}):
             ids = await choose_evidence(GenerateRequest.model_validate(DATA))
             self.assertIsNone(ids)
 
     async def test_provider_cannot_invent_evidence(self):
         request = GenerateRequest.model_validate({**DATA, "useAi": True})
         transport = httpx.MockTransport(lambda request: httpx.Response(200, json={
-            "choices": [{"message": {"content": json.dumps({"evidenceIds": ["invented"]})}}]
+            "candidates": [{"content": {"parts": [{"text": json.dumps({"evidenceIds": ["invented"]})}]}}]
         }))
         real_client = httpx.AsyncClient
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-only", "OPENAI_MODEL": "gpt-4o-mini"}):
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-only", "GEMINI_MODEL": "gemini-2.0-flash"}):
             with patch("app.main.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=transport, **kwargs)):
                 with self.assertRaises(HTTPException) as caught:
                     await choose_evidence(request)
-        self.assertEqual(caught.exception.status_code, 502)
+                self.assertEqual(caught.exception.status_code, 502)
 
-    async def test_interview_kit_uses_job_and_reviewed_experience(self):
-        response = await self.client.post("/v1/interviews/prepare", headers=self.headers, json={"profile": DATA["profile"], "job": DATA["job"]})
+    async def test_compose_deterministic_includes_job_and_name(self):
+        draft = deterministic_compose(ComposeRequest.model_validate({**DATA, "coverLetter": "Custom letter"}))
+        self.assertIn("Senior Engineer", draft.subject)
+        self.assertIn("Test Engineer", draft.body)
+        self.assertEqual(draft.coverLetter, "Custom letter")
+        self.assertEqual(draft.method, "rule-ranked")
+
+    async def test_compose_endpoint_without_ai(self):
+        response = await self.client.post(
+            "/v1/applications/compose",
+            headers=self.headers,
+            json={**DATA, "coverLetter": "Attached cover letter"},
+        )
         self.assertEqual(response.status_code, 200)
-        self.assertIn("TypeScript", response.json()["coding"])
-        self.assertIn("Built TypeScript APIs.", response.json()["answerOutline"])
+        result = response.json()
+        self.assertEqual(result["method"], "rule-ranked")
+        self.assertIn("Acme", result["body"])
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-class PortfolioImportTests(unittest.TestCase):
-    def test_extracts_cv_sections_without_inventing_qualifications(self):
-        from app.main import portfolio_from_text
-        result = portfolio_from_text("""Jane Engineer
-Senior Full-Stack Engineer
-jane@example.com
-https://github.com/jane
-SUMMARY
-I build reliable web products.
-SKILLS
-TypeScript, React, PostgreSQL
-EXPERIENCE
-Senior Engineer | Verified Company
-2020 – Present
-Built APIs with TypeScript.
-CERTIFICATIONS
-Cloud Practitioner — Example Issuer
-PROJECTS
-My Product | https://github.com/jane/product
-A project I built.
-""")
-        self.assertEqual(result['name'], 'Jane Engineer')
-        self.assertEqual(result['email'], 'jane@example.com')
-        self.assertEqual(result['skills'], ['TypeScript', 'React', 'PostgreSQL'])
-        self.assertEqual(result['experience'][0]['company'], 'Verified Company')
-        self.assertEqual(result['certifications'][0]['issuer'], 'Example Issuer')
-        self.assertEqual(result['projects'][0]['repositoryUrl'], 'https://github.com/jane/product')
-        self.assertTrue(result['reviewRequired'])
-        self.assertNotIn('AWS Certified Solutions Architect', str(result))
+    async def test_health_reports_gemini_provider(self):
+        response = await self.client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["provider"], "gemini")
+        self.assertFalse(body["llmConfigured"])

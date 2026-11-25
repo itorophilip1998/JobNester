@@ -219,8 +219,24 @@ const schemas: Record<string, z.ZodType> = {
     stage: z.enum(stages as [string, ...string[]]),
     resumeId: id.nullable(),
     followUp: z.union([z.literal(""), z.iso.date()]).optional(),
+    contactEmail: z.union([z.literal(""), z.email()]).optional(),
+    emailDraft: z
+      .object({
+        subject: z.string().min(1).max(300),
+        body: z.string().min(1).max(20000),
+        coverLetter: z.string().min(1).max(50000),
+      })
+      .optional(),
   }),
   "application.reapply": z.object({ id }),
+  "application.compose": z.object({
+    jobIds: z.array(id).min(1).max(20),
+    modeId: id,
+  }),
+  "application.send": z.object({
+    id,
+    resumeId: id.optional(),
+  }),
   "resume.batch": z.object({ jobIds: z.array(id).min(1).max(20), modeId: id }),
   "resume.generate": z.object({ jobId: id, modeId: id }),
   "resume.ready": z.object({ id }),
@@ -231,7 +247,7 @@ const schemas: Record<string, z.ZodType> = {
     email: z.union([z.literal(""), z.email()]),
   }),
   "settings.save": z.object({
-    dailyTarget: z.number().int().min(100).max(500),
+    dailyTarget: z.number().int().min(20).max(500),
     scanTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
     scanEnabled: z.boolean(),
     aiBudget: z.number().min(0).max(1000),
@@ -349,18 +365,32 @@ export class AppService {
             ? 1002
             : type === "resume"
               ? 1003
-              : 1004,
+              : type === "compose"
+                ? 1005
+                : type === "send"
+                  ? 1006
+                  : 1004,
       );
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lock})`;
+      const limit =
+        type === "resume" || type === "compose"
+          ? 20
+          : type === "notify"
+            ? 200
+            : type === "send"
+              ? 20
+              : 1;
       if (
         (await tx.task.count({
           where: { type, status: { in: ["queued", "running"] } },
-        })) >= (type === "resume" ? 20 : type === "notify" ? 200 : 1)
+        })) >= limit
       )
         throw new BadRequestException(
-          type === "resume"
-            ? "Up to 20 CV tasks can be queued at a time."
-            : "This task is already queued or running.",
+          type === "resume" || type === "compose"
+            ? "Up to 20 generation tasks can be queued at a time."
+            : type === "send"
+              ? "Up to 20 send tasks can be queued at a time."
+              : "This task is already queued or running.",
         );
       return tx.task.create({ data: { type } });
     });
@@ -420,11 +450,14 @@ export class AppService {
       case "job.save": {
         const job = await db.job.findUnique({ where: { id: d.id } });
         if (!job) throw new NotFoundException("Job not found");
+        const payload = job.payload as unknown as Job;
         await db.application.upsert({
           where: { jobId: d.id },
           update: {},
           create: {
             jobId: d.id,
+            contactEmail: payload.contactEmail || null,
+            sendStatus: "none",
             events: { create: { type: "saved", note: "Job saved" } },
           },
         });
@@ -529,6 +562,16 @@ export class AppService {
             appliedAt:
               d.stage === "Applied" ? a.appliedAt || new Date() : a.appliedAt,
             followUp: d.followUp ? new Date(d.followUp) : null,
+            ...(d.contactEmail !== undefined
+              ? { contactEmail: d.contactEmail || null }
+              : {}),
+            ...(d.emailDraft
+              ? {
+                  emailDraft: json(d.emailDraft),
+                  sendStatus:
+                    a.sendStatus === "sent" ? a.sendStatus : "drafted",
+                }
+              : {}),
             events: {
               create: {
                 type: "status",
@@ -538,6 +581,71 @@ export class AppService {
           },
         });
         break;
+      }
+      case "application.compose": {
+        if (!(o.profile as unknown as Profile).confirmed)
+          throw new BadRequestException("Confirm your experience first.");
+        if (
+          !(o.modes as unknown as CareerMode[]).some((m) => m.id === d.modeId)
+        )
+          throw new BadRequestException("Unknown mode");
+        const ids = [...new Set(d.jobIds)] as string[];
+        if ((await db.job.count({ where: { id: { in: ids } } })) !== ids.length)
+          throw new BadRequestException("One or more jobs no longer exist.");
+        const tasks = [];
+        for (const jobId of ids) {
+          await db.application.upsert({
+            where: { jobId },
+            update: { sendStatus: "none" },
+            create: { jobId, stage: "Saved", sendStatus: "none" },
+          });
+          const queued = await this.task("compose", { jobId, modeId: d.modeId });
+          await db.application.update({
+            where: { jobId },
+            data: { composeTaskId: queued.taskId },
+          });
+          tasks.push(queued);
+        }
+        return { tasks };
+      }
+      case "application.send": {
+        const a = await db.application.findUniqueOrThrow({
+          where: { id: d.id },
+        });
+        const draft = a.emailDraft as {
+          subject?: string;
+          body?: string;
+          coverLetter?: string;
+        } | null;
+        if (!draft?.subject || !draft?.body || !draft?.coverLetter)
+          throw new BadRequestException(
+            "Compose and review the application email before sending.",
+          );
+        if (!a.contactEmail)
+          throw new BadRequestException(
+            "Add a recipient email, or open the job link when no company email is available.",
+          );
+        if (
+          !(await db.integration.findUnique({ where: { provider: "gmail" } }))
+        )
+          throw new BadRequestException(
+            "Connect Gmail in Settings to send applications.",
+          );
+        const resumeId = d.resumeId || a.resumeId;
+        if (!resumeId)
+          throw new BadRequestException(
+            "Select a reviewed CV to attach before sending.",
+          );
+        const resume = await db.resume.findUnique({ where: { id: resumeId } });
+        if (!resume || !resume.ready || resume.jobId !== a.jobId)
+          throw new BadRequestException(
+            "Select a reviewed CV belonging to this job.",
+          );
+        await db.application.update({
+          where: { id: a.id },
+          data: { resumeId, sendStatus: "sending" },
+        });
+        return this.task("send", { applicationId: a.id, resumeId });
       }
       case "application.reapply": {
         const a = await db.application.findUniqueOrThrow({
