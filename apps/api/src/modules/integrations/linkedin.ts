@@ -4,9 +4,9 @@ import {
 } from "@nestjs/common";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Request, Response } from "express";
-import { apiOrigin, webOrigin } from "./config.js";
-import { db } from "./service.js";
-import { seal } from "./security.js";
+import { apiOrigin, webOrigin } from "../../config/index.js";
+import { db } from "../../common/prisma.js";
+import { seal } from "../../common/security.js";
 export async function connectLinkedIn(res: Response, asJson = false) {
   if (
     !process.env.LINKEDIN_CLIENT_ID ||

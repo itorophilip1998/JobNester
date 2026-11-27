@@ -18,7 +18,7 @@ Animations respect reduced-motion preferences. Uploaded files are private until 
 
 The Next.js app uses `@clerk/nextjs`; NestJS validates JWTs with `@clerk/backend`. Public portfolio and contact endpoints are accessible without login. Editing, draft data, imports, and private files require owner authorization.
 
-Set these in the root `jobnester/.env` for Docker/production:
+Set these in the root `.env` for Docker/production:
 
 ```dotenv
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=<your Clerk publishable key>

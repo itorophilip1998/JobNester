@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { required } from "./config.js";
+import { required } from "../config/index.js";
 function key() {
   const k = Buffer.from(required("TOKEN_ENCRYPTION_KEY"), "hex");
   if (k.length !== 32)

@@ -1,6 +1,6 @@
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { inspectDocx } from "./documents.js";
+import { inspectDocx } from "../../documents/documents.js";
 import { publicAssetReferences } from "@jobnester/core";
 import {
   S3Client,
@@ -14,8 +14,8 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
-import { db } from "./service.js";
-import { apiOrigin } from "./config.js";
+import { db } from "../../common/prisma.js";
+import { apiOrigin } from "../../config/index.js";
 import type { Portfolio } from "@jobnester/core";
 function storage() {
   if (!process.env.S3_BUCKET)

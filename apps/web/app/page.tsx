@@ -9,5 +9,5 @@ export default async function Page() {
     process.env.CLERK_SECRET_KEY
   )
     await auth.protect();
-  return <Workspace />;
+  return <Workspace initialPage="Discover Jobs" />;
 }

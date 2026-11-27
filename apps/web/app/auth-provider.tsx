@@ -7,6 +7,7 @@ import {
   SignOutButton,
 } from "@clerk/nextjs";
 import { createContext, useContext, type ReactNode } from "react";
+import { clerkAppearance } from "./clerk-appearance";
 const configured = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
 const AuthContext = createContext({
   ready: true,
@@ -26,10 +27,11 @@ function Bridge({ children }: { children: ReactNode }) {
 export function AppAuthProvider({ children }: { children: ReactNode }) {
   return configured ? (
     <ClerkProvider
+      appearance={clerkAppearance}
       signInUrl="/sign-in"
       signUpUrl="/sign-up"
-      signInFallbackRedirectUrl="/portfolio/edit"
-      signUpFallbackRedirectUrl="/portfolio/edit"
+      signInFallbackRedirectUrl="/jobs"
+      signUpFallbackRedirectUrl="/jobs"
     >
       <Bridge>{children}</Bridge>
     </ClerkProvider>

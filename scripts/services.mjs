@@ -117,13 +117,13 @@ async function configure() {
   if (process.platform !== "win32") await chmod(path, 0o600);
   if (!/^OWNER_EMAIL=\S+/m.test(env) || !/^CLERK_SECRET_KEY=\S+/m.test(env))
     console.log(
-      "Services can start now. Fill OWNER_EMAIL and Clerk credentials in jobnester/.env to sign into the private dashboard.",
+      "Services can start now. Fill OWNER_EMAIL and Clerk credentials in .env to sign into the private dashboard.",
     );
 }
 async function main() {
   if (!supported.includes(action)) {
     console.log(
-      "Usage: node scripts/services.mjs start|stop|restart|status|logs [service]|config",
+      "Usage: ./start.sh start|stop|restart|status|logs [service]|config\n   or: node scripts/services.mjs start|stop|restart|status|logs [service]|config",
     );
     process.exitCode = 1;
     return;
@@ -152,25 +152,26 @@ async function main() {
     await configure();
     if (action === "restart") await compose(["stop"]);
     console.log(
-      "Building and starting PostgreSQL, Redis, Python AI, NestJS API, worker, and Next.js…",
+      "Docker-first startup: building PostgreSQL, Redis, Python AI (Gemini), NestJS API, worker, and Next.js…",
     );
     try {
       await compose([
         "up",
         "--build",
         "--detach",
+        "--remove-orphans",
         "--wait",
         "--wait-timeout",
-        "240",
+        "300",
       ]);
     } catch (error) {
       console.error(
-        "Startup did not complete. Run npm run status and npm run logs -- <service> to inspect it. Existing data volumes are preserved.",
+        "Startup did not complete. Run ./start.sh status and ./start.sh logs <service> to inspect it. Existing data volumes are preserved.",
       );
       throw error;
     }
     console.log(
-      "\nJobNester is ready.\n  Next.js web  http://localhost:3000\n  NestJS API   http://localhost:4000/api/health\n  Python AI    http://localhost:8000/health\n\nStop: npm stop\nLogs: npm run logs -- api\n",
+      "\nJobNester is ready (Docker).\n  Next.js web  http://localhost:3000\n  NestJS API   http://localhost:4000/api/health\n  Python AI    http://localhost:8000/health\n\nStop:   ./stop.sh   or   npm stop\nLogs:   ./start.sh logs api\nStatus: ./start.sh status\n",
     );
   } else if (action === "stop") {
     await compose(["stop"]);

@@ -2,7 +2,7 @@ import { config, parse } from "dotenv";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 config({
-  path: fileURLToPath(new URL("../../../.env", import.meta.url)),
+  path: fileURLToPath(new URL("../../../../.env", import.meta.url)),
   quiet: true,
 } as any);
 export const webOrigin = process.env.WEB_ORIGIN || "http://localhost:3000";
@@ -20,7 +20,7 @@ export function required(name: string) {
 
 // Clerk CLI initializes the Next.js workspace. Reuse those exact development keys locally.
 const clerkEnv = fileURLToPath(
-  new URL("../../web/.env.local", import.meta.url),
+  new URL("../../../web/.env.local", import.meta.url),
 );
 if (existsSync(clerkEnv)) {
   const values = parse(readFileSync(clerkEnv));

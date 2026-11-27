@@ -117,6 +117,7 @@ export interface Job {
   technologies: string[];
   description: string;
   url: string;
+  contactEmail?: string | null;
   source: string;
   sourceId: string;
   postedAt: string;
@@ -126,6 +127,11 @@ export interface Job {
   hidden: boolean;
   matches: Record<string, Match>;
 }
+export interface ApplicationEmailDraft {
+  subject: string;
+  body: string;
+  coverLetter: string;
+}
 export interface Application {
   id: string;
   jobId: string;
@@ -134,6 +140,11 @@ export interface Application {
   appliedAt: string | null;
   events: { id: string; type: string; at: string; note: string }[];
   followUp: string | null;
+  contactEmail?: string | null;
+  emailDraft?: ApplicationEmailDraft | null;
+  sendStatus?: "none" | "drafted" | "sending" | "sent" | "failed";
+  sentAt?: string | null;
+  composeTaskId?: string | null;
 }
 export interface Resume {
   id: string;
@@ -293,7 +304,7 @@ export function emptyState(): AppState {
     },
     sources: [],
     settings: {
-      dailyTarget: 250,
+      dailyTarget: 20,
       scanTime: "07:00",
       scanEnabled: false,
       aiBudget: 10,

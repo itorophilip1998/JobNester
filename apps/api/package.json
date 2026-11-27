@@ -32,7 +32,8 @@
     "@types/express": "^5.0.5",
     "@types/multer": "^2.0.0",
     "@types/nodemailer": "^8.0.2",
-    "@types/pdfkit": "^0.17.3"
+    "@types/pdfkit": "^0.17.3",
+    "playwright": "^1.65.1"
   },
   "type": "module"
 }

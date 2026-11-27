@@ -4,7 +4,7 @@ test("dashboard and mobile navigation render without overflow", async ({
 }) => {
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: /Your next chapter starts here/ }),
+    page.getByRole("heading", { name: "An opportunity worth your time." }),
   ).toBeVisible();
   await expect(
     page.getByText("Interactive demo", { exact: true }),
@@ -17,15 +17,14 @@ test("dashboard and mobile navigation render without overflow", async ({
     )
     .toBe(true);
   await page.getByRole("button", { name: "Open navigation" }).click();
-  await page.getByRole("button", { name: "Discover Jobs" }).click();
+  await page.getByRole("button", { name: "Overview" }).click();
   await expect(
-    page.getByRole("heading", { name: "An opportunity worth your time." }),
+    page.getByRole("heading", { name: /Your next chapter starts here/ }),
   ).toBeVisible();
   await page.screenshot({ path: "test-results/mobile.png", fullPage: true });
 });
 test("search and filters change recommendations", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Discover Jobs" }).click();
+  await page.goto("/jobs");
   await page.getByRole("textbox", { name: "Search jobs" }).fill("Vercel");
   await expect(page.locator(".job-card")).toHaveCount(1);
   await page.getByRole("button", { name: "Filters", exact: true }).click();
@@ -37,8 +36,7 @@ test("search and filters change recommendations", async ({ page }) => {
 test("generate and approve a CV; confirm submission with immutable version", async ({
   page,
 }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Discover Jobs" }).click();
+  await page.goto("/jobs");
   await page
     .locator(".job-card")
     .filter({ hasText: "Vercel" })
@@ -60,9 +58,9 @@ test("generate and approve a CV; confirm submission with immutable version", asy
     .getByRole("combobox", { name: "Application stage" })
     .selectOption("Applied");
   await page
-    .getByRole("combobox", { name: "CV version submitted" })
+    .getByRole("combobox", { name: "CV version" })
     .selectOption({ index: 1 });
-  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
   await page.reload();
   await page.getByRole("button", { name: "Applications", exact: true }).click();
   await expect(
@@ -78,8 +76,8 @@ test("generate and approve a CV; confirm submission with immutable version", asy
 test("duplicate imports are blocked and scan cannot fabricate results", async ({
   page,
 }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Add job", exact: true }).click();
+  await page.goto("/jobs");
+  await page.getByRole("button", { name: "Import job", exact: true }).click();
   await page
     .getByRole("textbox", { name: "Application URL" })
     .fill("https://vercel.com/careers?utm_source=test");
@@ -97,7 +95,7 @@ test("duplicate imports are blocked and scan cannot fabricate results", async ({
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.getByRole("button", { name: "Close dialog" }).click();
   await page
-    .getByRole("button", { name: "Scan for jobs", exact: true })
+    .getByRole("button", { name: "Pull 20 jobs", exact: true })
     .click();
   await expect(page.getByRole("status")).toContainText(
     "requires the API and worker",
@@ -134,8 +132,7 @@ test("portfolio publishes a browser-local snapshot and contact explicitly stays 
 test("batch CV generation creates reviewed-fact drafts for each selected job", async ({
   page,
 }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Discover Jobs" }).click();
+  await page.goto("/jobs");
   await page
     .getByRole("checkbox", {
       name: "Select Vercel Senior Full-Stack Engineer",
@@ -156,6 +153,32 @@ test("batch CV generation creates reviewed-fact drafts for each selected job", a
   await expect(
     page.locator(".resume-card").filter({ hasText: "GitLab" }),
   ).toBeVisible();
+});
+
+test("compose application email drafts for selected jobs in demo mode", async ({
+  page,
+}) => {
+  await page.goto("/jobs");
+  await page
+    .getByRole("checkbox", {
+      name: "Select Vercel Senior Full-Stack Engineer",
+      exact: true,
+    })
+    .check();
+  await page.getByRole("button", { name: /Generate emails/ }).click();
+  await expect(page.getByRole("status")).toContainText("Composing emails");
+  await page.getByRole("button", { name: "Applications", exact: true }).click();
+  await page.locator(".kanban-card").filter({ hasText: "Vercel" }).click();
+  await expect(page.getByRole("textbox", { name: "Subject" })).not.toHaveValue(
+    "",
+  );
+  await expect(
+    page.getByRole("button", { name: "Send via Gmail" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Send via Gmail" }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "available in the live app",
+  );
 });
 
 test("country onboarding separates eligible worldwide jobs from US-only roles", async ({

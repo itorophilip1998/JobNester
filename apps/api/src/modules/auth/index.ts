@@ -1,8 +1,9 @@
-import "./config.js";
+import "../../config/index.js";
 import { createClerkClient, verifyToken } from "@clerk/backend";
 import type { Request } from "express";
-import { webOrigin, ownerEmail } from "./config.js";
-import { db } from "./service.js";
+import { webOrigin, ownerEmail } from "../../config/index.js";
+import { db } from "../../common/prisma.js";
+
 export async function isOwner(req: Request) {
   const cookie = (req.headers.cookie || "")
     .split(";")
