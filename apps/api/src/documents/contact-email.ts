@@ -1,5 +1,5 @@
 import nodemailer from "nodemailer";
-import { db } from "./service.js";
+import { db } from "../common/prisma.js";
 export async function deliverInquiry(id: string) {
   const inquiry = await db.inquiry.findUniqueOrThrow({ where: { id } });
   if (inquiry.deliveryStatus === "delivered") return "Email already delivered.";

@@ -1,4 +1,4 @@
-import "./config.js";
+import "../config/index.js";
 import { z } from "zod";
 
 export const resumeResponse = z.object({

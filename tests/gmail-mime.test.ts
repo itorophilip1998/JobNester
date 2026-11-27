@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildApplicationMime,
   encodeGmailRaw,
-} from "../apps/api/src/gmail-mime.ts";
+} from "../apps/api/src/documents/gmail-mime.ts";
 
 describe("gmail mime", () => {
   it("builds multipart message with attachments and gmail-safe raw encoding", () => {
