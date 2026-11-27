@@ -1,6 +1,8 @@
 # JobNester AI
 
-A personal career workspace and public portfolio built with Next.js, NestJS, Python/FastAPI, PostgreSQL/Prisma, and BullMQ/Redis. The web app includes a clearly labeled browser-local demo; the live app uses an owner-authenticated API and durable database.
+A personal career workspace and public portfolio built with Next.js, NestJS, Python/FastAPI (Gemini), PostgreSQL/Prisma, and BullMQ/Redis. The web app includes a clearly labeled browser-local demo; the live app uses an owner-authenticated API and durable database.
+
+Feature catalog: [docs/features.md](./docs/features.md). Module maps: [docs/architecture.md](./docs/architecture.md).
 
 ## Start all services (Docker-first)
 

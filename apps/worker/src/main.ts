@@ -1,19 +1,26 @@
-import { deliverInquiry } from "../../api/src/contact-email.js";
+import { deliverInquiry } from "../../api/src/documents/contact-email.js";
 import { writeFile } from "node:fs/promises";
 import {
   aiRequest,
   aiCapabilities,
   resumeResponse,
   composeResponse,
-} from "../../api/src/ai-client.js";
-import "../../api/src/config.js";
+} from "../../api/src/ai/ai-client.js";
+import "../../api/src/config/index.js";
 import { Worker } from "bullmq";
 import { Prisma, type Source as DbSource } from "@prisma/client";
 import { db, json, queue } from "../../api/src/service.js";
-import { redisConnection, required, ownerEmail } from "../../api/src/config.js";
-import { seal, unseal } from "../../api/src/security.js";
-import { buildApplicationMime, encodeGmailRaw } from "../../api/src/gmail-mime.js";
-import { renderPdf } from "../../api/src/pdf-render.js";
+import {
+  redisConnection,
+  required,
+  ownerEmail,
+} from "../../api/src/config/index.js";
+import { seal, unseal } from "../../api/src/common/security.js";
+import {
+  buildApplicationMime,
+  encodeGmailRaw,
+} from "../../api/src/documents/gmail-mime.js";
+import { renderPdf } from "../../api/src/documents/pdf-render.js";
 import {
   collect,
   normalizePosting,

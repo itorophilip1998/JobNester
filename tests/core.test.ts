@@ -301,7 +301,7 @@ test("submitted CV cannot be silently replaced", () =>
   ));
 
 test("DOCX inspection rejects oversized archive metadata before decompression", async () => {
-  const { inspectDocx } = await import("../apps/api/src/documents.js");
+  const { inspectDocx } = await import("../apps/api/src/documents/documents.js");
   const name = Buffer.from("word/document.xml");
   const archive = Buffer.alloc(46 + name.length + 22);
   archive.writeUInt32LE(0x02014b50, 0);

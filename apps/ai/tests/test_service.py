@@ -75,7 +75,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         }))
         real_client = httpx.AsyncClient
         with patch.dict(os.environ, {"GEMINI_API_KEY": "test-only", "GEMINI_MODEL": "gemini-2.0-flash"}):
-            with patch("app.main.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=transport, **kwargs)):
+            with patch("app.services.gemini.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=transport, **kwargs)):
                 with self.assertRaises(HTTPException) as caught:
                     await choose_evidence(request)
                 self.assertEqual(caught.exception.status_code, 502)
